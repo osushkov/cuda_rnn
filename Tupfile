@@ -1,0 +1,5 @@
+include_rules
+: src/*.o \
+src/math/math.a \
+src/common/common.a \
+|> $(CC) %f -o %o $(CLFLAGS) |> cuda_rnn
