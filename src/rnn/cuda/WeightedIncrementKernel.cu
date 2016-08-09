@@ -1,4 +1,3 @@
-
 #include "WeightedIncrementKernel.cuh"
 #include "Constants.hpp"
 #include "Types.cuh"
