@@ -66,7 +66,7 @@ void WeightedIncrementKernel::Apply(CuMatrix layerWeights, ConnectionActivation 
   int bpgX = (output.cols - 1 + TPB_X - 1) / TPB_X;
   int bpgY = (input.batchSize + TPB_Y - 1) / TPB_Y;
 
-  unsigned spitch = (TPB_X + 1);
+  unsigned spitch = TPB_X + 1;
   size_t sharedMemSize = 2 * spitch * TPB_Y * sizeof(float);
 
   weightedIncrementKernel<<<dim3(bpgX, bpgY, 1), dim3(TPB_X, TPB_Y, 1), sharedMemSize, stream>>>(
