@@ -1,13 +1,13 @@
 
 #include "TaskExecutor.hpp"
-#include "ActivationKernel.cuh"
-#include "SoftmaxKernel.cuh"
-#include "BackwardDeltaKernel.cuh"
-#include "GradientIncrementKernel.cuh"
-#include "MatrixFillKernel.cuh"
-#include "MatrixScaleKernel.cuh"
-#include "TransposeKernel.cuh"
-#include "WeightedIncrementKernel.cuh"
+#include "kernels/ActivationKernel.cuh"
+#include "kernels/SoftmaxKernel.cuh"
+#include "kernels/BackwardDeltaKernel.cuh"
+#include "kernels/GradientIncrementKernel.cuh"
+#include "kernels/MatrixFillKernel.cuh"
+#include "kernels/MatrixScaleKernel.cuh"
+#include "kernels/TransposeKernel.cuh"
+#include "kernels/WeightedIncrementKernel.cuh"
 #include "Util.cuh"
 #include <cuda_runtime.h>
 

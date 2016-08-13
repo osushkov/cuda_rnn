@@ -1,6 +1,6 @@
 
 #include "CuDeltaAccum.hpp"
-#include "MatrixFillKernel.cuh"
+#include "kernels/MatrixFillKernel.cuh"
 #include <cassert>
 
 using namespace rnn;

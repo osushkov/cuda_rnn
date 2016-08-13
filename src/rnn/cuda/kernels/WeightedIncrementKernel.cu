@@ -1,6 +1,6 @@
 #include "WeightedIncrementKernel.cuh"
 #include "Constants.hpp"
-#include "Types.cuh"
+#include "../Types.cuh"
 #include <cuda_runtime.h>
 
 using namespace rnn;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Types.hpp"
+#include "../Types.hpp"
 #include <cuda_runtime.h>
 
 namespace rnn {

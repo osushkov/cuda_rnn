@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Types.hpp"
-#include "../LayerDef.hpp"
+#include "../Types.hpp"
+#include "../../LayerDef.hpp"
 #include <cuda_runtime.h>
 
 namespace rnn {

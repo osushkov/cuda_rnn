@@ -1,7 +1,7 @@
 
 #include "BackwardDeltaKernel.cuh"
 #include "Constants.hpp"
-#include "Types.cuh"
+#include "../Types.cuh"
 #include <cuda_runtime.h>
 #include <cassert>
 
