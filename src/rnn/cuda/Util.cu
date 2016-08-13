@@ -41,6 +41,7 @@ CuMatrix util::AllocMatrix(unsigned rows, unsigned cols) {
 }
 
 void util::FreeMatrix(CuMatrix &m) {
+  assert(m.data != nullptr);
   cudaError_t err = cudaFree(m.data);
   CheckError(err);
   m.data = nullptr;

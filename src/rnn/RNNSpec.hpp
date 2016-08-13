@@ -1,8 +1,8 @@
 
 #pragma once
 
-#include "../common/Common.hpp"
 #include "LayerDef.hpp"
+#include <cassert>
 #include <vector>
 
 namespace rnn {
@@ -10,12 +10,29 @@ namespace rnn {
 struct RNNSpec {
   unsigned numInputs;
   unsigned numOutputs;
-  vector<LayerSpec> layers;
-  vector<LayerConnection> connections;
+  std::vector<LayerSpec> layers;
+  std::vector<LayerConnection> connections;
 
   LayerActivation hiddenActivation;
   LayerActivation outputActivation;
 
   float nodeActivationRate; // for dropout regularization.
+  unsigned maxBatchSize;
+
+  // Helper function.
+  unsigned LayerSize(unsigned layerId) const {
+    if (layerId == 0) {
+      return numInputs;
+    }
+
+    for (const auto &ls : layers) {
+      if (ls.uid == layerId) {
+        return ls.numNodes;
+      }
+    }
+
+    assert(false);
+    return 0;
+  }
 };
 }

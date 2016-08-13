@@ -9,7 +9,7 @@ namespace rnn {
 
 class CudaTrainer {
 public:
-  CudaTrainer(const RNNSpec &spec);
+  CudaTrainer(const RNNSpec &spec, unsigned maxTraceLength);
   ~CudaTrainer();
 
   void SetWeights(const vector<math::MatrixView> &weights);
