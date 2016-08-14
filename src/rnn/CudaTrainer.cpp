@@ -1,12 +1,16 @@
 
 #include "CudaTrainer.hpp"
+#include "../math/MatrixView.hpp"
 #include "cuda/CuAdamState.hpp"
 #include "cuda/CuDeltaAccum.hpp"
 #include "cuda/CuGradientAccum.hpp"
 #include "cuda/CuLayer.hpp"
 #include "cuda/CuLayerMemory.hpp"
 #include "cuda/TaskExecutor.hpp"
+#include "cuda/Util.hpp"
 #include <cassert>
+#include <cstring>
+#include <utility>
 
 using namespace rnn;
 using namespace rnn::cuda;
@@ -23,12 +27,29 @@ struct CudaTrainer::CudaTrainerImpl {
   CuAdamState adamState;
 
   TaskExecutor executor;
+  vector<pair<math::MatrixView, math::MatrixView>> inputOutputStaging;
 
   CudaTrainerImpl(const RNNSpec &spec, unsigned maxTraceLength)
       : spec(spec), maxTraceLength(maxTraceLength), deltaAccum(spec, maxTraceLength),
         gradientAccum(spec), layerMemory(spec, maxTraceLength), adamState(spec) {
     assert(maxTraceLength > 0);
     adamState.Clear();
+
+    for (unsigned i = 0; i < maxTraceLength; i++) {
+      math::MatrixView inputStaging;
+      inputStaging.rows = spec.maxBatchSize;
+      inputStaging.cols = spec.numInputs;
+      inputStaging.data =
+          (float *)util::AllocPinned(inputStaging.rows * inputStaging.cols * sizeof(float));
+
+      math::MatrixView outputStaging;
+      outputStaging.rows = spec.maxBatchSize;
+      outputStaging.cols = spec.numOutputs;
+      outputStaging.data =
+          (float *)util::AllocPinned(outputStaging.rows * outputStaging.cols * sizeof(float));
+
+      inputOutputStaging.emplace_back(inputStaging, outputStaging);
+    }
   }
 
   ~CudaTrainerImpl() {
@@ -40,6 +61,11 @@ struct CudaTrainer::CudaTrainerImpl {
     gradientAccum.Cleanup();
     layerMemory.Cleanup();
     adamState.Cleanup();
+
+    for (auto &staging : inputOutputStaging) {
+      util::FreePinned(staging.first.data);
+      util::FreePinned(staging.second.data);
+    }
   }
 
   void SetWeights(const vector<math::MatrixView> &weights) {}
@@ -65,7 +91,20 @@ struct CudaTrainer::CudaTrainerImpl {
     updateLayers(batchSize);
   }
 
-  void pushTraceToDevice(const vector<SliceBatch> &trace) {}
+  void pushTraceToDevice(const vector<SliceBatch> &trace) {
+    for (unsigned i = 0; i < trace.size(); i++) {
+      assert(trace[i].batchInput.cols() == inputOutputStaging[i].first.cols);
+      assert(trace[i].batchInput.rows() <= inputOutputStaging[i].first.rows);
+      assert(trace[i].batchOutput.cols() == inputOutputStaging[i].second.cols);
+      assert(trace[i].batchOutput.rows() <= inputOutputStaging[i].second.rows);
+
+      size_t inputSize = trace[i].batchInput.rows() * trace[i].batchInput.cols() * sizeof(float);
+      memcpy(inputOutputStaging[i].first.data, trace[i].batchInput.data(), inputSize);
+
+      size_t outputSize = trace[i].batchOutput.rows() * trace[i].batchOutput.cols() * sizeof(float);
+      memcpy(inputOutputStaging[i].second.data, trace[i].batchOutput.data(), outputSize);
+    }
+  }
 
   void forwardProp(int timestamp, unsigned batchSize) {
     for (auto &layer : layers) {
