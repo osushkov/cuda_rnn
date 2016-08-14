@@ -25,6 +25,14 @@ struct SamplesBatch {
   // each sample is a row vector in the input and targetOutput matrices.
   CuMatrix input;
   CuMatrix targetOutput;
+
+  SamplesBatch() = default;
+  SamplesBatch(unsigned batchSize, CuMatrix input, CuMatrix targetOutput)
+      : batchSize(batchSize), input(input), targetOutput(targetOutput) {
+    assert(batchSize > 0);
+    assert(batchSize <= input.rows);
+    assert(input.rows == targetOutput.rows);
+  }
 };
 
 struct ConnectionActivation {
@@ -32,11 +40,25 @@ struct ConnectionActivation {
 
   CuMatrix activation;
   CuMatrix derivative;
+
+  ConnectionActivation() = default;
+  ConnectionActivation(unsigned batchSize, CuMatrix activation, CuMatrix derivative)
+      : batchSize(batchSize), activation(activation), derivative(derivative) {
+    assert(batchSize > 0);
+    assert(batchSize <= activation.rows);
+    assert(activation.rows == derivative.rows && activation.cols == derivative.cols);
+  }
 };
 
 struct LayerBatchDeltas {
   unsigned batchSize; // equal to the number of rows in the matrix actually used.
   CuMatrix delta;
+
+  LayerBatchDeltas() = default;
+  LayerBatchDeltas(unsigned batchSize, CuMatrix delta) : batchSize(batchSize), delta(delta) {
+    assert(batchSize > 0);
+    assert(batchSize <= delta.rows);
+  }
 };
 }
 }

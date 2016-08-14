@@ -1,6 +1,7 @@
 
 #include "CuTimeSlice.hpp"
 #include "kernels/MatrixFillKernel.cuh"
+#include "kernels/InitialiseOutputKernel.cuh"
 #include <cassert>
 
 using namespace rnn;
@@ -42,7 +43,9 @@ void CuTimeSlice::Clear(void) {
   MatrixFillKernel::Apply(networkOutput, 0.0f, 0);
 
   for (auto &cd : connectionData) {
+    cd.haveActivation = false;
     MatrixFillKernel::Apply(cd.activation, 0.0f, 0);
     MatrixFillKernel::Apply(cd.derivative, 0.0f, 0);
+    InitialiseOutputKernel::Apply(cd.activation, 0);
   }
 }

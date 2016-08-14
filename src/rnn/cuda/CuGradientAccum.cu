@@ -6,9 +6,9 @@
 using namespace rnn;
 using namespace rnn::cuda;
 
-CuGradientAccum::CuGradientAccum(const RNNSpec &spec, const vector<LayerConnection> connections) {
-  allWeightsAccum.reserve(connections.size());
-  for (const auto &connection : connections) {
+CuGradientAccum::CuGradientAccum(const RNNSpec &spec) {
+  allWeightsAccum.reserve(spec.connections.size());
+  for (const auto &connection : spec.connections) {
     unsigned inputSize = spec.LayerSize(connection.srcLayerId) + 1;
     unsigned layerSize = spec.LayerSize(connection.dstLayerId);
     allWeightsAccum.emplace_back(connection, layerSize, inputSize);
@@ -34,6 +34,7 @@ CuConnectionAccum *CuGradientAccum::GetConnection(const LayerConnection &connect
 
 void CuGradientAccum::Clear(void) {
   for (auto &wa : allWeightsAccum) {
+    wa.samples = 0;
     MatrixFillKernel::Apply(wa.accumGradient, 0.0f, 0);
   }
 }

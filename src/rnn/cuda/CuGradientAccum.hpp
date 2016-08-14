@@ -27,7 +27,7 @@ struct CuConnectionAccum {
 struct CuGradientAccum {
   vector<CuConnectionAccum> allWeightsAccum;
 
-  CuGradientAccum(const RNNSpec &spec, const vector<LayerConnection> connections);
+  CuGradientAccum(const RNNSpec &spec);
   void Cleanup(void);
 
   CuConnectionAccum *GetConnection(const LayerConnection &connection);

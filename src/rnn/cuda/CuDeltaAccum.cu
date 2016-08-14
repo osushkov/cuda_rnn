@@ -6,21 +6,23 @@
 using namespace rnn;
 using namespace rnn::cuda;
 
-CuDeltaAccum::CuDeltaAccum(unsigned maxBatchSize, unsigned maxTraceLength,
-                           const vector<LayerSpec> &layers) {
+CuDeltaAccum::CuDeltaAccum(const RNNSpec &spec, unsigned maxTraceLength) {
 
-  assert(maxBatchSize > 0 && maxTraceLength > 0);
-  assert(layers.size() > 0);
+  assert(maxTraceLength > 0);
 
-  allDeltaAccum.reserve(maxTraceLength * layers.size());
+  allDeltaAccum.reserve(maxTraceLength * spec.layers.size());
   for (int timestamp = 0; timestamp < maxTraceLength; timestamp++) {
-    for (const auto &layer : layers) {
-      allDeltaAccum.emplace_back(layer.uid, timestamp, maxBatchSize, layer.numNodes);
+    for (const auto &layer : spec.layers) {
+      allDeltaAccum.emplace_back(layer.uid, timestamp, spec.maxBatchSize, layer.numNodes);
     }
   }
 }
 
-void Cleanup(void);
+void CuDeltaAccum::Cleanup(void) {
+  for (auto &da : allDeltaAccum) {
+    da.Cleanup();
+  }
+}
 
 CuLayerAccum *CuDeltaAccum::GetDelta(unsigned layerId, int timestamp) {
   for (auto &da : allDeltaAccum) {
@@ -35,6 +37,7 @@ CuLayerAccum *CuDeltaAccum::GetDelta(unsigned layerId, int timestamp) {
 
 void CuDeltaAccum::Clear(void) {
   for (auto &da : allDeltaAccum) {
+    da.samples = 0;
     MatrixFillKernel::Apply(da.accumDelta, 0.0f, 0);
   }
 }

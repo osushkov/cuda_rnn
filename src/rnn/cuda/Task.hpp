@@ -25,6 +25,7 @@ struct LayerActivationData {
   ConnectionActivation layer;
   LayerActivation activation;
 
+  LayerActivationData() = default;
   LayerActivationData(ConnectionActivation layer, LayerActivation activation)
       : layer(layer), activation(activation) {}
 };
@@ -32,6 +33,7 @@ struct LayerActivationData {
 struct LayerSoftmaxData {
   ConnectionActivation layer;
 
+  LayerSoftmaxData() = default;
   LayerSoftmaxData(ConnectionActivation layer) : layer(layer) {}
 };
 
@@ -41,6 +43,7 @@ struct PropagateDeltaData {
   ConnectionActivation connection;
   LayerBatchDeltas outDelta;
 
+  PropagateDeltaData() = default;
   PropagateDeltaData(LayerBatchDeltas nextDelta, CuMatrix transposedWeights,
                      ConnectionActivation connection, LayerBatchDeltas outDelta)
       : nextDelta(nextDelta), transposedWeights(transposedWeights), connection(connection),
@@ -52,6 +55,7 @@ struct GradientIncrementData {
   ConnectionActivation connection;
   CuMatrix outGradient;
 
+  GradientIncrementData() = default;
   GradientIncrementData(LayerBatchDeltas layerDeltas, ConnectionActivation connection,
                         CuMatrix outGradient)
       : layerDeltas(layerDeltas), connection(connection), outGradient(outGradient) {}
@@ -61,6 +65,7 @@ struct FillMatrixData {
   CuMatrix target;
   float value;
 
+  FillMatrixData() = default;
   FillMatrixData(CuMatrix target, float value) : target(target), value(value) {
     assert(target.data != nullptr);
   }
@@ -70,6 +75,7 @@ struct ScaleMatrixData {
   CuMatrix target;
   float scale;
 
+  ScaleMatrixData() = default;
   ScaleMatrixData(CuMatrix target, float scale) : target(target), scale(scale) {
     assert(target.data != nullptr);
   }
@@ -79,6 +85,7 @@ struct TransposeMatrixData {
   CuMatrix src;
   CuMatrix dst;
 
+  TransposeMatrixData() = default;
   TransposeMatrixData(CuMatrix src, CuMatrix dst) : src(src), dst(dst) {
     assert(dst.cols >= src.rows);
     assert(dst.rows >= src.cols);
@@ -91,6 +98,7 @@ struct ForwardIncrementData {
   ConnectionActivation input;
   CuMatrix output;
 
+  ForwardIncrementData() = default;
   ForwardIncrementData(CuMatrix layerWeights, ConnectionActivation input, CuMatrix output)
       : layerWeights(layerWeights), input(input), output(output) {}
 };
@@ -99,6 +107,7 @@ struct CopyMatrixD2HData {
   CuMatrix src;
   math::MatrixView dst;
 
+  CopyMatrixD2HData() = default;
   CopyMatrixD2HData(CuMatrix src, math::MatrixView dst) : src(src), dst(dst) {
     assert(dst.rows >= src.rows);
     assert(dst.cols >= src.cols);
@@ -110,6 +119,7 @@ struct CopyMatrixH2DData {
   math::MatrixView src;
   CuMatrix dst;
 
+  CopyMatrixH2DData() = default;
   CopyMatrixH2DData(math::MatrixView src, CuMatrix dst) : src(src), dst(dst) {
     assert(dst.rows >= src.rows);
     assert(dst.cols >= src.cols);
@@ -121,6 +131,7 @@ struct CopyMatrixD2DData {
   CuMatrix src;
   CuMatrix dst;
 
+  CopyMatrixD2DData() = default;
   CopyMatrixD2DData(CuMatrix src, CuMatrix dst) : src(src), dst(dst) {
     assert(dst.rows >= src.rows);
     assert(dst.cols >= src.cols);
@@ -145,6 +156,27 @@ union TaskData {
 struct Task {
   TaskType type;
   TaskData data;
+
+  static Task LayerActivation(ConnectionActivation layer, LayerActivation activation) {
+    Task task;
+    task.type = TaskType::LAYER_ACTIVATION;
+    task.data.layerActivationData = LayerActivationData(layer, activation);
+    return task;
+  }
+
+  static Task ForwardIncrement(CuMatrix layerWeights, ConnectionActivation input, CuMatrix output) {
+    Task task;
+    task.type = TaskType::FORWARD_INCREMENT;
+    task.data.forwardIncrementData = ForwardIncrementData(layerWeights, input, output);
+    return task;
+  }
+
+  static Task CopyMatrixD2D(CuMatrix src, CuMatrix dst) {
+    Task task;
+    task.type = TaskType::COPY_MATRIX_D2D;
+    task.data.copyMatrixD2DData = CopyMatrixD2DData(src, dst);
+    return task;
+  }
 };
 }
 }

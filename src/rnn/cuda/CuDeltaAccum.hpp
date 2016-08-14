@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../LayerDef.hpp"
+#include "../RNNSpec.hpp"
 #include "Types.hpp"
 #include "Util.hpp"
 #include <cassert>
@@ -28,7 +29,7 @@ struct CuLayerAccum {
 struct CuDeltaAccum {
   vector<CuLayerAccum> allDeltaAccum;
 
-  CuDeltaAccum(unsigned maxBatchSize, unsigned maxTraceLength, const vector<LayerSpec> &layers);
+  CuDeltaAccum(const RNNSpec &spec, unsigned maxTraceLength);
   void Cleanup(void);
 
   CuLayerAccum *GetDelta(unsigned layerId, int timestamp);
