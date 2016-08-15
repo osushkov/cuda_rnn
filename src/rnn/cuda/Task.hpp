@@ -195,6 +195,13 @@ struct Task {
     return task;
   }
 
+  static Task ScaleMatrix(CuMatrix target, float scale) {
+    Task task;
+    task.type = TaskType::SCALE_MATRIX;
+    task.data.scaleMatrixData = ScaleMatrixData(target, scale);
+    return task;
+  }
+
   static Task ForwardIncrement(CuMatrix layerWeights, ConnectionActivation input, CuMatrix output) {
     Task task;
     task.type = TaskType::FORWARD_INCREMENT;
