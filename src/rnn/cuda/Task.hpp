@@ -164,6 +164,37 @@ struct Task {
     return task;
   }
 
+  static Task LayerSoftmax(ConnectionActivation layer) {
+    Task task;
+    task.type = TaskType::LAYER_SOFTMAX;
+    task.data.layerSoftmaxData = LayerSoftmaxData(layer);
+    return task;
+  }
+
+  static Task PropagateDelta(LayerBatchDeltas nextDelta, CuMatrix transposedWeights,
+                             ConnectionActivation connection, LayerBatchDeltas outDelta) {
+    Task task;
+    task.type = TaskType::PROPAGATE_DELTA;
+    task.data.propagateDeltaData =
+        PropagateDeltaData(nextDelta, transposedWeights, connection, outDelta);
+    return task;
+  }
+
+  static Task GradientIncrement(LayerBatchDeltas layerDeltas, ConnectionActivation connection,
+                                CuMatrix outGradient) {
+    Task task;
+    task.type = TaskType::GRADIENT_INCREMENT;
+    task.data.gradientIncrementData = GradientIncrementData(layerDeltas, connection, outGradient);
+    return task;
+  }
+
+  static Task FillMatrix(CuMatrix target, float value) {
+    Task task;
+    task.type = TaskType::FILL_MATRIX;
+    task.data.fillMatrixData = FillMatrixData(target, value);
+    return task;
+  }
+
   static Task ForwardIncrement(CuMatrix layerWeights, ConnectionActivation input, CuMatrix output) {
     Task task;
     task.type = TaskType::FORWARD_INCREMENT;
