@@ -1,5 +1,6 @@
 
 #include "CudaTrainer.hpp"
+#include "../common/Common.hpp"
 #include "../math/MatrixView.hpp"
 #include "cuda/CuAdamState.hpp"
 #include "cuda/CuDeltaAccum.hpp"
@@ -73,13 +74,16 @@ struct CudaTrainer::CudaTrainerImpl {
 
   void Train(const vector<SliceBatch> &trace) {
     assert(trace.size() <= maxTraceLength);
+    assert(!trace.empty());
+    assert(trace.front().batchInput.rows() == trace.front().batchOutput.rows());
 
     deltaAccum.Clear();
     gradientAccum.Clear();
     layerMemory.Clear();
 
-    unsigned batchSize = 16; // TODO: derive this from the trace data.
     pushTraceToDevice(trace);
+
+    unsigned batchSize = trace.front().batchInput.rows();
     for (int i = 0; i < static_cast<int>(trace.size()); i++) {
       forwardProp(i, batchSize);
     }
@@ -103,6 +107,16 @@ struct CudaTrainer::CudaTrainerImpl {
 
       size_t outputSize = trace[i].batchOutput.rows() * trace[i].batchOutput.cols() * sizeof(float);
       memcpy(inputOutputStaging[i].second.data, trace[i].batchOutput.data(), outputSize);
+
+      CuTimeSlice *ts = layerMemory.GetTimeSlice(static_cast<int>(i));
+      assert(ts != nullptr);
+
+      executor.Execute(Task::CopyMatrixH2D(inputOutputStaging[i].second, ts->networkOutput));
+      for (auto &cd : ts->connectionData) {
+        if (cd.connection.srcLayerId == 0) {
+          executor.Execute(Task::CopyMatrixH2D(inputOutputStaging[i].first, cd.activation));
+        }
+      }
     }
   }
 
@@ -114,7 +128,7 @@ struct CudaTrainer::CudaTrainerImpl {
       vector<CuConnectionMemoryData *> outData = getAllOutgoingConnections(layer, timestamp);
 
       // This should only be possible if all the outgoing connections are recurrent.
-      // Currently, this is assumed to be not possible.
+      // Currently, this is assumed to not be possible.
       assert(!outData.empty());
 
       CuConnectionMemoryData *targetOut = outData[0];
@@ -128,10 +142,8 @@ struct CudaTrainer::CudaTrainerImpl {
         CuConnectionMemoryData *inData = getConnectionMemoryData(in.first, timestamp);
         assert(inData != nullptr && inData->haveActivation);
 
-        ConnectionActivation connectionActivation(batchSize, inData->activation,
-                                                  inData->derivative);
-        executor.Execute(
-            Task::ForwardIncrement(in.second, connectionActivation, targetOut->activation));
+        ConnectionActivation activationIn(batchSize, inData->activation, inData->derivative);
+        executor.Execute(Task::ForwardIncrement(in.second, activationIn, targetOut->activation));
       }
 
       ConnectionActivation outActivation(batchSize, targetOut->activation, targetOut->derivative);
@@ -170,6 +182,64 @@ struct CudaTrainer::CudaTrainerImpl {
   }
 
   void backProp(int timestamp, unsigned batchSize) {}
+
+  void recursiveBackprop(const CuLayer &layer, int timestamp, unsigned batchSize) {
+    CuLayerAccum *layerDelta = deltaAccum.GetDelta(layer.layerId, timestamp);
+    assert(layerDelta != nullptr);
+
+    assert(layerDelta->samples > 0);
+    float deltaScale = 1.0f / static_cast<float>(layerDelta->samples);
+    executor.Execute(Task::ScaleMatrix(layerDelta->accumDelta, deltaScale));
+
+    LayerBatchDeltas batchDelta(batchSize, layerDelta->accumDelta);
+
+    CuTimeSlice *slice = layerMemory.GetTimeSlice(timestamp);
+    assert(slice != nullptr);
+
+    for (const auto &connection : layer.incoming) {
+      if (connection.first.timeOffset == 1 && timestamp == 0) {
+        continue;
+      }
+
+      CuConnectionMemoryData *connData = slice->GetConnectionData(connection.first);
+      assert(connData != nullptr && connData->haveActivation);
+
+      CuConnectionAccum *connAccum = gradientAccum.GetConnection(connection.first);
+      assert(connAccum != nullptr);
+
+      ConnectionActivation activationIn(batchSize, connData->activation, connData->derivative);
+      executor.Execute(Task::GradientIncrement(batchDelta, activationIn, connAccum->accumGradient));
+      connAccum->samples++;
+
+      if (connection.first.srcLayerId != 0) { // The source is another layer from the srcSlice.
+        // CuLayer *srcLayer = findLayer(connection.first.srcLayerId);
+
+        // TODO: store the weight transpose in the CuLayer to save compute time.
+        // TODO: debug the backprop in CPU RNN because I think its wrong. Its taking the
+        // incorrect slice.
+
+        // // Now increment the delta for the src layer.
+        // int nRows = connection.second.rows();
+        // int nCols = connection.second.cols() - 1;
+        // EMatrix noBiasWeights = connection.second.bottomLeftCorner(nRows, nCols);
+        // EMatrix srcDelta = noBiasWeights.transpose() * delta;
+        // assert(srcLayer.numNodes == srcDelta.rows());
+        //
+        // componentScale(srcDelta, cmd->derivative);
+        // LayerAccum &deltaAccum =
+        //     bpContext.deltaAccum.IncrementDelta(srcLayer.layerId, srcTimestamp, srcDelta);
+        //
+        // if (connection.first.timeOffset == 0) {
+        //   recursiveBackprop(srcLayer, timestamp, batchSize);
+        // }
+      }
+    }
+  }
+
+  CuLayer *findLayer(unsigned layerId) {
+    auto r = find_if(layers, [layerId](const CuLayer &l) { return l.layerId == layerId; });
+    return r.valid() ? &(r.val()) : nullptr;
+  }
 
   void updateLayers(unsigned batchSize) {}
 };

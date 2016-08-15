@@ -30,11 +30,12 @@ struct TaskExecutor::TaskExecutorImpl {
 
     switch(t.type) {
     case TaskType::LAYER_ACTIVATION:
-      ActivationKernel::Apply(t.data.layerActivationData.layer,
-        t.data.layerActivationData.activation, stream);
-      return;
-    case TaskType::LAYER_SOFTMAX:
-      SoftmaxKernel::Apply(t.data.layerSoftmaxData.layer, stream);
+      if (t.data.layerActivationData.activation == LayerActivation::SOFTMAX) {
+        SoftmaxKernel::Apply(t.data.layerActivationData.layer, stream);
+      } else {
+        ActivationKernel::Apply(
+            t.data.layerActivationData.layer, t.data.layerActivationData.activation, stream);
+      }
       return;
     case TaskType::PROPAGATE_DELTA:
       BackwardDeltaKernel::Apply(t.data.propagateDeltaData.nextDelta,

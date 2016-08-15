@@ -9,7 +9,6 @@ namespace cuda {
 
 enum class TaskType {
   LAYER_ACTIVATION,
-  LAYER_SOFTMAX,
   PROPAGATE_DELTA,
   GRADIENT_INCREMENT,
   FILL_MATRIX,
@@ -28,13 +27,6 @@ struct LayerActivationData {
   LayerActivationData() = default;
   LayerActivationData(ConnectionActivation layer, LayerActivation activation)
       : layer(layer), activation(activation) {}
-};
-
-struct LayerSoftmaxData {
-  ConnectionActivation layer;
-
-  LayerSoftmaxData() = default;
-  LayerSoftmaxData(ConnectionActivation layer) : layer(layer) {}
 };
 
 struct PropagateDeltaData {
@@ -141,7 +133,6 @@ struct CopyMatrixD2DData {
 
 union TaskData {
   LayerActivationData layerActivationData;
-  LayerSoftmaxData layerSoftmaxData;
   PropagateDeltaData propagateDeltaData;
   GradientIncrementData gradientIncrementData;
   FillMatrixData fillMatrixData;
@@ -161,13 +152,6 @@ struct Task {
     Task task;
     task.type = TaskType::LAYER_ACTIVATION;
     task.data.layerActivationData = LayerActivationData(layer, activation);
-    return task;
-  }
-
-  static Task LayerSoftmax(ConnectionActivation layer) {
-    Task task;
-    task.type = TaskType::LAYER_SOFTMAX;
-    task.data.layerSoftmaxData = LayerSoftmaxData(layer);
     return task;
   }
 
@@ -206,6 +190,13 @@ struct Task {
     Task task;
     task.type = TaskType::FORWARD_INCREMENT;
     task.data.forwardIncrementData = ForwardIncrementData(layerWeights, input, output);
+    return task;
+  }
+
+  static Task CopyMatrixH2D(math::MatrixView src, CuMatrix dst) {
+    Task task;
+    task.type = TaskType::COPY_MATRIX_H2D;
+    task.data.copyMatrixH2DData = CopyMatrixH2DData(src, dst);
     return task;
   }
 

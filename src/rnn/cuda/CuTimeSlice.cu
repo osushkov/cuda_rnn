@@ -8,8 +8,7 @@ using namespace rnn;
 using namespace rnn::cuda;
 
 CuTimeSlice::CuTimeSlice(const RNNSpec &spec, int timestamp)
-    : timestamp(timestamp), networkInput(util::AllocMatrix(spec.maxBatchSize, spec.numInputs)),
-      networkOutput(util::AllocMatrix(spec.maxBatchSize, spec.numOutputs)) {
+    : timestamp(timestamp), networkOutput(util::AllocMatrix(spec.maxBatchSize, spec.numOutputs)) {
 
   assert(timestamp >= 0);
   for (const auto &connection : spec.connections) {
@@ -19,7 +18,6 @@ CuTimeSlice::CuTimeSlice(const RNNSpec &spec, int timestamp)
 }
 
 void CuTimeSlice::Cleanup(void) {
-  util::FreeMatrix(networkInput);
   util::FreeMatrix(networkOutput);
 
   for (auto &cd : connectionData) {
@@ -39,7 +37,6 @@ CuConnectionMemoryData *CuTimeSlice::GetConnectionData(const LayerConnection &co
 }
 
 void CuTimeSlice::Clear(void) {
-  MatrixFillKernel::Apply(networkInput, 0.0f, 0);
   MatrixFillKernel::Apply(networkOutput, 0.0f, 0);
 
   for (auto &cd : connectionData) {

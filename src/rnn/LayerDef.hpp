@@ -24,7 +24,7 @@ struct LayerConnection {
 };
 
 struct LayerSpec {
-  unsigned uid; // must be >= 1, 0 is the "input" layer.
+  unsigned uid; // must be >= 1, 0 is the "input" layer if src, or output if dst.
   unsigned numNodes;
   bool isOutput;
 
