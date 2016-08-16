@@ -23,8 +23,9 @@ CuLayer::CuLayer(const RNNSpec &nnSpec, const LayerSpec &layerSpec)
     if (lc.dstLayerId == layerId) {
       // +1 accounts for the bias.
       unsigned inputSize = nnSpec.LayerSize(lc.srcLayerId) + 1;
-      CuMatrix weightsMatrix = util::AllocMatrix(numNodes, inputSize);
-      incoming.emplace_back(lc, weightsMatrix);
+      CuMatrix weights = util::AllocMatrix(numNodes, inputSize);
+      CuMatrix weightsT = util::AllocMatrix(inputSize, numNodes);
+      incoming.emplace_back(lc, CuWeights(weights, weightsT));
     }
 
     if (lc.srcLayerId == layerId) {
@@ -35,6 +36,17 @@ CuLayer::CuLayer(const RNNSpec &nnSpec, const LayerSpec &layerSpec)
 
 void CuLayer::Cleanup(void) {
   for (auto& ic : incoming) {
-    util::FreeMatrix(ic.second);
+    util::FreeMatrix(ic.second.weights);
+    util::FreeMatrix(ic.second.weightsT);
   }
+}
+
+CuWeights* CuLayer::GetWeights(const LayerConnection &connection) {
+  for (auto& c : incoming) {
+    if (c.first == connection) {
+      return &c.second;
+    }
+  }
+
+  return nullptr;
 }

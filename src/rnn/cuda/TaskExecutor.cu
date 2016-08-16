@@ -1,6 +1,7 @@
 
 #include "TaskExecutor.hpp"
 #include "kernels/ActivationKernel.cuh"
+#include "kernels/AdamKernel.cuh"
 #include "kernels/SoftmaxKernel.cuh"
 #include "kernels/BackwardDeltaKernel.cuh"
 #include "kernels/GradientIncrementKernel.cuh"
@@ -58,6 +59,17 @@ struct TaskExecutor::TaskExecutorImpl {
     case TaskType::FORWARD_INCREMENT:
       WeightedIncrementKernel::Apply(t.data.forwardIncrementData.layerWeights,
         t.data.forwardIncrementData.input, t.data.forwardIncrementData.output, stream);
+      return;
+    case TaskType::ADAM_UPDATE:
+      AdamKernel::UpdateMomentumAndRMS(
+        t.data.adamUpdateData.gradient, t.data.adamUpdateData.momentum, t.data.adamUpdateData.rms,
+        t.data.adamUpdateData.beta1, t.data.adamUpdateData.beta2, stream);
+      return;
+    case TaskType::ADAM_INCREMENT:
+      AdamKernel::UpdateWeightsWithAdam(
+        t.data.adamIncrementData.weights, t.data.adamIncrementData.momentum,
+        t.data.adamIncrementData.rms, t.data.adamIncrementData.beta1, t.data.adamIncrementData.beta2,
+        t.data.adamIncrementData.lr, t.data.adamIncrementData.epsilon, stream);
       return;
     case TaskType::COPY_MATRIX_D2H:
       err = cudaMemcpy2DAsync(

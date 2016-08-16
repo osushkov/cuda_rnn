@@ -4,6 +4,7 @@
 #include "../math/Math.hpp"
 #include "RNNSpec.hpp"
 #include "SliceBatch.hpp"
+#include <utility>
 
 namespace rnn {
 
@@ -12,8 +13,8 @@ public:
   CudaTrainer(const RNNSpec &spec, unsigned maxTraceLength);
   ~CudaTrainer();
 
-  void SetWeights(const vector<math::MatrixView> &weights);
-  void GetWeights(vector<math::MatrixView> &outWeights);
+  void SetWeights(const vector<pair<LayerConnection, math::MatrixView>> &weights);
+  void GetWeights(vector<pair<LayerConnection, math::MatrixView>> &outWeights);
 
   void Train(const vector<SliceBatch> &trace);
 

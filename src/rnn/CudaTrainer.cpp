@@ -16,6 +16,11 @@
 using namespace rnn;
 using namespace rnn::cuda;
 
+constexpr float ADAM_BETA1 = 0.9f;
+constexpr float ADAM_BETA2 = 0.999f;
+constexpr float ADAM_LR = 0.001f;
+constexpr float ADAM_EPSILON = 10e-8;
+
 struct CudaTrainer::CudaTrainerImpl {
   RNNSpec spec;
   unsigned maxTraceLength;
@@ -69,8 +74,49 @@ struct CudaTrainer::CudaTrainerImpl {
     }
   }
 
-  void SetWeights(const vector<math::MatrixView> &weights) {}
-  void GetWeights(vector<math::MatrixView> &outWeights) {}
+  // TODO: SetWeights and GetWeights can share a whole bunch of code in a separate function, instead
+  // of the current copy-paste.
+  void SetWeights(const vector<pair<LayerConnection, math::MatrixView>> &inWeights) {
+    // Don't care about speed here really, so we can skip staging memory.
+    for (const auto &w : inWeights) {
+      CuLayer *layer = findLayer(w.first.dstLayerId);
+      assert(layer != nullptr);
+
+      bool found = false;
+      for (auto &li : layer->incoming) {
+        if (li.first == w.first) {
+          assert(li.second.weights.rows == w.second.rows);
+          assert(li.second.weights.cols == w.second.cols);
+
+          executor.Execute(Task::CopyMatrixH2D(w.second, li.second.weights));
+          executor.Execute(Task::TransposeMatrix(li.second.weights, li.second.weightsT));
+          found = true;
+          break;
+        }
+      }
+      assert(found);
+    }
+  }
+  void GetWeights(vector<pair<LayerConnection, math::MatrixView>> &outWeights) {
+    // Don't care about speed here really, so we can skip staging memory.
+    for (const auto &w : outWeights) {
+      CuLayer *layer = findLayer(w.first.dstLayerId);
+      assert(layer != nullptr);
+
+      bool found = false;
+      for (auto &li : layer->incoming) {
+        if (li.first == w.first) {
+          assert(li.second.weights.rows == w.second.rows);
+          assert(li.second.weights.cols == w.second.cols);
+
+          executor.Execute(Task::CopyMatrixD2H(li.second.weights, w.second));
+          found = true;
+          break;
+        }
+      }
+      assert(found);
+    }
+  }
 
   void Train(const vector<SliceBatch> &trace) {
     assert(trace.size() <= maxTraceLength);
@@ -143,7 +189,8 @@ struct CudaTrainer::CudaTrainerImpl {
         assert(inData != nullptr && inData->haveActivation);
 
         ConnectionActivation activationIn(batchSize, inData->activation, inData->derivative);
-        executor.Execute(Task::ForwardIncrement(in.second, activationIn, targetOut->activation));
+        executor.Execute(
+            Task::ForwardIncrement(in.second.weights, activationIn, targetOut->activation));
       }
 
       ConnectionActivation outActivation(batchSize, targetOut->activation, targetOut->derivative);
@@ -178,7 +225,9 @@ struct CudaTrainer::CudaTrainerImpl {
       return nullptr;
     }
 
-    return ts->GetConnectionData(conn);
+    auto r = ts->GetConnectionData(conn);
+    assert(r != nullptr);
+    return r;
   }
 
   void backProp(int timestamp, unsigned batchSize) {}
@@ -188,8 +237,10 @@ struct CudaTrainer::CudaTrainerImpl {
     assert(layerDelta != nullptr);
 
     assert(layerDelta->samples > 0);
-    float deltaScale = 1.0f / static_cast<float>(layerDelta->samples);
-    executor.Execute(Task::ScaleMatrix(layerDelta->accumDelta, deltaScale));
+    if (layerDelta->samples > 1) {
+      float deltaScale = 1.0f / static_cast<float>(layerDelta->samples);
+      executor.Execute(Task::ScaleMatrix(layerDelta->accumDelta, deltaScale));
+    }
 
     LayerBatchDeltas batchDelta(batchSize, layerDelta->accumDelta);
 
@@ -212,26 +263,22 @@ struct CudaTrainer::CudaTrainerImpl {
       connAccum->samples++;
 
       if (connection.first.srcLayerId != 0) { // The source is another layer from the srcSlice.
-        // CuLayer *srcLayer = findLayer(connection.first.srcLayerId);
+        int srcTimestamp = timestamp - connection.first.timeOffset;
+        assert(srcTimestamp >= 0);
 
-        // TODO: store the weight transpose in the CuLayer to save compute time.
-        // TODO: debug the backprop in CPU RNN because I think its wrong. Its taking the
-        // incorrect slice.
+        CuLayer *srcLayer = findLayer(connection.first.srcLayerId);
+        assert(srcLayer != nullptr);
 
-        // // Now increment the delta for the src layer.
-        // int nRows = connection.second.rows();
-        // int nCols = connection.second.cols() - 1;
-        // EMatrix noBiasWeights = connection.second.bottomLeftCorner(nRows, nCols);
-        // EMatrix srcDelta = noBiasWeights.transpose() * delta;
-        // assert(srcLayer.numNodes == srcDelta.rows());
-        //
-        // componentScale(srcDelta, cmd->derivative);
-        // LayerAccum &deltaAccum =
-        //     bpContext.deltaAccum.IncrementDelta(srcLayer.layerId, srcTimestamp, srcDelta);
-        //
-        // if (connection.first.timeOffset == 0) {
-        //   recursiveBackprop(srcLayer, timestamp, batchSize);
-        // }
+        CuLayerAccum *srcDelta = deltaAccum.GetDelta(connection.first.srcLayerId, srcTimestamp);
+        assert(srcDelta != nullptr);
+
+        LayerBatchDeltas targetDelta(batchSize, srcDelta->accumDelta);
+        executor.Execute(Task::PropagateDelta(batchDelta, connection.second.weightsT, activationIn,
+                                              targetDelta));
+
+        if (connection.first.timeOffset == 0) {
+          recursiveBackprop(*srcLayer, timestamp, batchSize);
+        }
       }
     }
   }
@@ -241,7 +288,35 @@ struct CudaTrainer::CudaTrainerImpl {
     return r.valid() ? &(r.val()) : nullptr;
   }
 
-  void updateLayers(unsigned batchSize) {}
+  void updateLayers(unsigned batchSize) {
+    for (const auto &conn : spec.connections) {
+      if (conn.dstLayerId == 0) {
+        continue;
+      }
+
+      CuConnectionAccum *cg = gradientAccum.GetConnection(conn);
+      assert(cg != nullptr && cg->samples > 0);
+
+      float scaleFactor = 1.0f / static_cast<float>(batchSize * cg->samples);
+      executor.Execute(Task::ScaleMatrix(cg->accumGradient, scaleFactor));
+
+      CuAdamConnection *adamConn = adamState.GetConnection(conn);
+      assert(adamConn != nullptr);
+
+      executor.Execute(Task::AdamUpdate(cg->accumGradient, adamConn->momentum, adamConn->rms,
+                                        ADAM_BETA1, ADAM_BETA2));
+
+      CuLayer *dstLayer = findLayer(conn.dstLayerId);
+      assert(dstLayer != nullptr);
+
+      CuWeights *weights = dstLayer->GetWeights(conn);
+      assert(weights != nullptr);
+
+      executor.Execute(Task::AdamIncrement(weights->weights, adamConn->momentum, adamConn->rms,
+                                           ADAM_BETA1, ADAM_BETA2, ADAM_LR, ADAM_EPSILON));
+      executor.Execute(Task::TransposeMatrix(weights->weights, weights->weightsT));
+    }
+  }
 };
 
 CudaTrainer::CudaTrainer(const RNNSpec &spec, unsigned maxTraceLength)
@@ -249,8 +324,12 @@ CudaTrainer::CudaTrainer(const RNNSpec &spec, unsigned maxTraceLength)
 
 CudaTrainer::~CudaTrainer() = default;
 
-void CudaTrainer::SetWeights(const vector<math::MatrixView> &weights) { impl->SetWeights(weights); }
+void CudaTrainer::SetWeights(const vector<pair<LayerConnection, math::MatrixView>> &weights) {
+  impl->SetWeights(weights);
+}
 
-void CudaTrainer::GetWeights(vector<math::MatrixView> &outWeights) { impl->GetWeights(outWeights); }
+void CudaTrainer::GetWeights(vector<pair<LayerConnection, math::MatrixView>> &outWeights) {
+  impl->GetWeights(outWeights);
+}
 
 void CudaTrainer::Train(const vector<SliceBatch> &trace) { impl->Train(trace); }

@@ -15,6 +15,8 @@ enum class TaskType {
   SCALE_MATRIX,
   TRANSPOSE_MATRIX,
   FORWARD_INCREMENT,
+  ADAM_UPDATE,
+  ADAM_INCREMENT,
   COPY_MATRIX_D2H,
   COPY_MATRIX_H2D,
   COPY_MATRIX_D2D,
@@ -95,6 +97,44 @@ struct ForwardIncrementData {
       : layerWeights(layerWeights), input(input), output(output) {}
 };
 
+struct AdamUpdateData {
+  CuMatrix gradient;
+  CuMatrix momentum;
+  CuMatrix rms;
+  float beta1;
+  float beta2;
+
+  AdamUpdateData() = default;
+  AdamUpdateData(CuMatrix gradient, CuMatrix momentum, CuMatrix rms, float beta1, float beta2)
+      : gradient(gradient), momentum(momentum), rms(rms), beta1(beta1), beta2(beta2) {
+    assert(gradient.rows == momentum.rows);
+    assert(gradient.cols == momentum.cols);
+    assert(rms.rows == momentum.rows);
+    assert(rms.cols == momentum.cols);
+  }
+};
+
+struct AdamIncrementData {
+  CuMatrix weights;
+  CuMatrix momentum;
+  CuMatrix rms;
+  float beta1;
+  float beta2;
+  float lr;
+  float epsilon;
+
+  AdamIncrementData() = default;
+  AdamIncrementData(CuMatrix weights, CuMatrix momentum, CuMatrix rms, float beta1, float beta2,
+                    float lr, float epsilon)
+      : weights(weights), momentum(momentum), rms(rms), beta1(beta1), beta2(beta2), lr(lr),
+        epsilon(epsilon) {
+    assert(weights.rows == momentum.rows);
+    assert(weights.cols == momentum.cols);
+    assert(rms.rows == momentum.rows);
+    assert(rms.cols == momentum.cols);
+  }
+};
+
 struct CopyMatrixD2HData {
   CuMatrix src;
   math::MatrixView dst;
@@ -139,6 +179,8 @@ union TaskData {
   ScaleMatrixData scaleMatrixData;
   TransposeMatrixData transposeMatrixData;
   ForwardIncrementData forwardIncrementData;
+  AdamUpdateData adamUpdateData;
+  AdamIncrementData adamIncrementData;
   CopyMatrixD2HData copyMatrixD2HData;
   CopyMatrixH2DData copyMatrixH2DData;
   CopyMatrixD2DData copyMatrixD2DData;
@@ -186,6 +228,13 @@ struct Task {
     return task;
   }
 
+  static Task TransposeMatrix(CuMatrix src, CuMatrix dst) {
+    Task task;
+    task.type = TaskType::TRANSPOSE_MATRIX;
+    task.data.transposeMatrixData = TransposeMatrixData(src, dst);
+    return task;
+  }
+
   static Task ForwardIncrement(CuMatrix layerWeights, ConnectionActivation input, CuMatrix output) {
     Task task;
     task.type = TaskType::FORWARD_INCREMENT;
@@ -193,10 +242,34 @@ struct Task {
     return task;
   }
 
+  static Task AdamUpdate(CuMatrix gradient, CuMatrix momentum, CuMatrix rms, float beta1,
+                         float beta2) {
+    Task task;
+    task.type = TaskType::ADAM_UPDATE;
+    task.data.adamUpdateData = AdamUpdateData(gradient, momentum, rms, beta1, beta2);
+    return task;
+  }
+
+  static Task AdamIncrement(CuMatrix weights, CuMatrix momentum, CuMatrix rms, float beta1,
+                            float beta2, float lr, float epsilon) {
+    Task task;
+    task.type = TaskType::ADAM_INCREMENT;
+    task.data.adamIncrementData =
+        AdamIncrementData(weights, momentum, rms, beta1, beta2, lr, epsilon);
+    return task;
+  }
+
   static Task CopyMatrixH2D(math::MatrixView src, CuMatrix dst) {
     Task task;
     task.type = TaskType::COPY_MATRIX_H2D;
     task.data.copyMatrixH2DData = CopyMatrixH2DData(src, dst);
+    return task;
+  }
+
+  static Task CopyMatrixD2H(CuMatrix src, math::MatrixView dst) {
+    Task task;
+    task.type = TaskType::COPY_MATRIX_D2H;
+    task.data.copyMatrixD2HData = CopyMatrixD2HData(src, dst);
     return task;
   }
 
