@@ -35,8 +35,8 @@ struct CudaTrainer::CudaTrainerImpl {
   TaskExecutor executor;
   vector<pair<math::MatrixView, math::MatrixView>> inputOutputStaging;
 
-  CudaTrainerImpl(const RNNSpec &spec, unsigned maxTraceLength)
-      : spec(spec), maxTraceLength(maxTraceLength), deltaAccum(spec, maxTraceLength),
+  CudaTrainerImpl(const RNNSpec &spec)
+      : spec(spec), maxTraceLength(spec.maxTraceLength), deltaAccum(spec, maxTraceLength),
         gradientAccum(spec), layerMemory(spec, maxTraceLength), adamState(spec) {
     assert(maxTraceLength > 0);
     adamState.Clear();
@@ -319,8 +319,7 @@ struct CudaTrainer::CudaTrainerImpl {
   }
 };
 
-CudaTrainer::CudaTrainer(const RNNSpec &spec, unsigned maxTraceLength)
-    : impl(new CudaTrainerImpl(spec, maxTraceLength)) {}
+CudaTrainer::CudaTrainer(const RNNSpec &spec) : impl(new CudaTrainerImpl(spec)) {}
 
 CudaTrainer::~CudaTrainer() = default;
 

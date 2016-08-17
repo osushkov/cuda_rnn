@@ -10,7 +10,7 @@ namespace rnn {
 namespace cuda {
 namespace util {
 
-void OutputError(cudaError_t code, const char *file, int line) {
+inline void OutputError(cudaError_t code, const char *file, int line) {
   if (code != cudaSuccess) {
     std::cerr << "GPU error: " << cudaGetErrorString(code) << " "
         << file << "(" << line << ")" << std::endl;

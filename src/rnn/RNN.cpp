@@ -2,6 +2,7 @@
 #include "RNN.hpp"
 #include "../common/Maybe.hpp"
 #include "Activations.hpp"
+#include "CudaTrainer.hpp"
 #include "Layer.hpp"
 #include "LayerDef.hpp"
 #include "TimeSlice.hpp"
@@ -15,10 +16,15 @@ struct RNN::RNNImpl {
   vector<Layer> layers;
   Maybe<TimeSlice> previous;
 
-  RNNImpl(const RNNSpec &spec) : spec(spec), previous(Maybe<TimeSlice>::none) {
+  CudaTrainer cudaTrainer;
+
+  RNNImpl(const RNNSpec &spec) : spec(spec), previous(Maybe<TimeSlice>::none), cudaTrainer(spec) {
     for (const auto &ls : spec.layers) {
       layers.emplace_back(spec, ls);
     }
+
+    vector<pair<LayerConnection, math::MatrixView>> weights = getHostWeights();
+    cudaTrainer.SetWeights(weights);
   }
 
   void ClearMemory(void) { previous = Maybe<TimeSlice>::none; }
@@ -30,16 +36,29 @@ struct RNN::RNNImpl {
     TimeSlice *prevSlice = previous.valid() ? &(previous.val()) : nullptr;
     TimeSlice curSlice(0, input, layers);
 
-    EMatrix output = forwardPass(prevSlice, curSlice, false);
+    EMatrix output = forwardPass(prevSlice, curSlice);
     previous = Maybe<TimeSlice>(curSlice);
     return output;
   }
 
-  void Update(const vector<SliceBatch> &trace) {}
+  void Update(const vector<SliceBatch> &trace) { cudaTrainer.Train(trace); }
 
-  void Refresh(void) {}
+  void Refresh(void) {
+    vector<pair<LayerConnection, math::MatrixView>> weights = getHostWeights();
+    cudaTrainer.GetWeights(weights);
+  }
 
-  EMatrix forwardPass(const TimeSlice *prevSlice, TimeSlice &curSlice, bool doDropout) {
+  vector<pair<LayerConnection, math::MatrixView>> getHostWeights(void) {
+    vector<pair<LayerConnection, math::MatrixView>> weights;
+    for (auto &l : layers) {
+      for (auto &c : l.weights) {
+        weights.emplace_back(c.first, math::GetMatrixView(c.second));
+      }
+    }
+    return weights;
+  }
+
+  EMatrix forwardPass(const TimeSlice *prevSlice, TimeSlice &curSlice) {
     for (const auto &layer : layers) {
       pair<EMatrix, EMatrix> layerOut = getLayerOutput(layer, prevSlice, curSlice);
 
@@ -51,12 +70,7 @@ struct RNN::RNNImpl {
         cmd->derivative = layerOut.second;
         cmd->haveActivation = true;
 
-        // only apply dropout for non-skip recurrent connections.
-        if (doDropout && oc.timeOffset == 0) {
-          applyDropout(cmd->activation, cmd->derivative);
-        }
-
-        if (!doDropout && oc.timeOffset == 0) {
+        if (oc.timeOffset == 0) {
           cmd->activation *= spec.nodeActivationRate;
         }
       }
@@ -68,17 +82,6 @@ struct RNN::RNNImpl {
 
     assert(curSlice.networkOutput.rows() == spec.numOutputs);
     return curSlice.networkOutput;
-  }
-
-  void applyDropout(EMatrix &activation, EMatrix &derivative) {
-    for (int r = 0; r < activation.rows(); r++) {
-      for (int c = 0; c < activation.cols(); c++) {
-        if (math::UnitRand() > spec.nodeActivationRate) {
-          activation(r, c) = 0.0f;
-          derivative(r, c) = 0.0f;
-        }
-      }
-    }
   }
 
   // Returns the output vector of the layer, and the derivative vector for the layer.
@@ -150,11 +153,6 @@ struct RNN::RNNImpl {
 
 RNN::RNN(const RNNSpec &spec) : impl(new RNNImpl(spec)) {}
 RNN::~RNN() = default;
-
-RNN &RNN::operator=(const RNN &other) {
-  impl.reset(new RNNImpl(*other.impl));
-  return *this;
-}
 
 void RNN::ClearMemory(void) { impl->ClearMemory(); }
 

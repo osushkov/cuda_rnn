@@ -13,7 +13,8 @@ public:
   RNN(const RNNSpec &spec);
   virtual ~RNN();
 
-  RNN &operator=(const RNN &other);
+  RNN(const RNN &) = delete;
+  RNN &operator=(const RNN &) = delete;
 
   void ClearMemory(void);
   EMatrix Process(const EMatrix &input);

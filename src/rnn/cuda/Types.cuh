@@ -9,7 +9,7 @@
 namespace rnn {
 namespace cuda {
 
-__device__ float *Elem(CuMatrix m, unsigned r, unsigned c) {
+inline __device__ float *Elem(CuMatrix m, unsigned r, unsigned c) {
   assert(r < m.rows && c < m.cols);
   return (float *)((char *)m.data + r * m.pitch) + c;
 }

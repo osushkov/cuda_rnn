@@ -18,6 +18,7 @@ struct RNNSpec {
 
   float nodeActivationRate; // for dropout regularization.
   unsigned maxBatchSize;
+  unsigned maxTraceLength;
 
   // Helper function.
   unsigned LayerSize(unsigned layerId) const {
