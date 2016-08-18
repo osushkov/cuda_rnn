@@ -32,7 +32,7 @@ struct CuConnectionMemoryData {
 
 struct CuTimeSlice {
   int timestamp;
-  CuMatrix networkOutput;
+  CuConnectionMemoryData networkOutput;
   vector<CuConnectionMemoryData> connectionData;
 
   CuTimeSlice(const RNNSpec &spec, int timestamp);

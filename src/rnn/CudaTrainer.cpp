@@ -34,6 +34,7 @@ struct CudaTrainer::CudaTrainerImpl {
 
   TaskExecutor executor;
   vector<pair<math::MatrixView, math::MatrixView>> inputOutputStaging;
+  vector<TargetOutput> traceTargets;
 
   CudaTrainerImpl(const RNNSpec &spec)
       : spec(spec), maxTraceLength(spec.maxTraceLength), deltaAccum(spec, maxTraceLength),
@@ -55,6 +56,9 @@ struct CudaTrainer::CudaTrainerImpl {
           (float *)util::AllocPinned(outputStaging.rows * outputStaging.cols * sizeof(float));
 
       inputOutputStaging.emplace_back(inputStaging, outputStaging);
+
+      traceTargets.emplace_back(spec.maxBatchSize,
+                                util::AllocMatrix(spec.maxBatchSize, spec.numOutputs));
     }
   }
 
@@ -71,6 +75,10 @@ struct CudaTrainer::CudaTrainerImpl {
     for (auto &staging : inputOutputStaging) {
       util::FreePinned(staging.first.data);
       util::FreePinned(staging.second.data);
+    }
+
+    for (auto &tt : traceTargets) {
+      util::FreeMatrix(tt.value);
     }
   }
 
@@ -127,11 +135,14 @@ struct CudaTrainer::CudaTrainerImpl {
     gradientAccum.Clear();
     layerMemory.Clear();
 
-    pushTraceToDevice(trace);
-
     unsigned batchSize = trace.front().batchInput.rows();
+    pushTraceToDevice(trace, batchSize);
+
     for (int i = 0; i < static_cast<int>(trace.size()); i++) {
       forwardProp(i, batchSize);
+
+      CuTimeSlice *ts = layerMemory.GetTimeSlice(i);
+      assert(ts != nullptr && ts->networkOutput.haveActivation);
     }
 
     for (int i = static_cast<int>(trace.size()) - 1; i >= 0; i--) {
@@ -141,7 +152,7 @@ struct CudaTrainer::CudaTrainerImpl {
     updateLayers(batchSize);
   }
 
-  void pushTraceToDevice(const vector<SliceBatch> &trace) {
+  void pushTraceToDevice(const vector<SliceBatch> &trace, unsigned batchSize) {
     for (unsigned i = 0; i < trace.size(); i++) {
       assert(trace[i].batchInput.cols() == inputOutputStaging[i].first.cols);
       assert(trace[i].batchInput.rows() <= inputOutputStaging[i].first.rows);
@@ -154,10 +165,12 @@ struct CudaTrainer::CudaTrainerImpl {
       size_t outputSize = trace[i].batchOutput.rows() * trace[i].batchOutput.cols() * sizeof(float);
       memcpy(inputOutputStaging[i].second.data, trace[i].batchOutput.data(), outputSize);
 
+      traceTargets[i].batchSize = batchSize;
+      executor.Execute(Task::CopyMatrixH2D(inputOutputStaging[i].second, traceTargets[i].value));
+
       CuTimeSlice *ts = layerMemory.GetTimeSlice(static_cast<int>(i));
       assert(ts != nullptr);
 
-      executor.Execute(Task::CopyMatrixH2D(inputOutputStaging[i].second, ts->networkOutput));
       for (auto &cd : ts->connectionData) {
         if (cd.connection.srcLayerId == 0) {
           executor.Execute(Task::CopyMatrixH2D(inputOutputStaging[i].first, cd.activation));
@@ -209,10 +222,17 @@ struct CudaTrainer::CudaTrainerImpl {
 
   vector<CuConnectionMemoryData *> getAllOutgoingConnections(const CuLayer &layer, int timestamp) {
     vector<CuConnectionMemoryData *> result;
-    for (auto &conn : layer.outgoing) {
-      CuConnectionMemoryData *cmd = getConnectionMemoryData(conn, timestamp + conn.timeOffset);
-      if (cmd != nullptr) {
-        result.push_back(cmd);
+
+    if (layer.isOutput) {
+      CuTimeSlice *ts = layerMemory.GetTimeSlice(timestamp);
+      assert(ts != nullptr);
+      result.push_back(&ts->networkOutput);
+    } else {
+      for (auto &conn : layer.outgoing) {
+        CuConnectionMemoryData *cmd = getConnectionMemoryData(conn, timestamp + conn.timeOffset);
+        if (cmd != nullptr) {
+          result.push_back(cmd);
+        }
       }
     }
 
