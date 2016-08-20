@@ -16,7 +16,7 @@ void matrixFillKernel(CuMatrix target, float value) {
   }
 }
 
-void MatrixFillKernel::Apply(CuMatrix target, float value, cudaStream_t stream) {
+void MatrixFillKernel::Apply(const CuMatrix &target, float value, cudaStream_t stream) {
   int bpgX = (target.cols + TPB_X - 1) / TPB_X;
   int bpgY = (target.rows + TPB_Y - 1) / TPB_Y;
 

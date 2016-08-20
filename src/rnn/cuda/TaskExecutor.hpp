@@ -11,6 +11,7 @@ public:
   TaskExecutor();
   ~TaskExecutor();
 
+  void Synchronize(void);
   void Execute(const Task &task);
 
 private:

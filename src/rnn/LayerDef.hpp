@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cassert>
+#include <iostream>
 
 namespace rnn {
 
@@ -18,8 +19,8 @@ struct LayerConnection {
   }
 
   bool operator==(const LayerConnection &other) const {
-    return this->srcLayerId == other.srcLayerId && this->dstLayerId == other.dstLayerId &&
-           this->timeOffset == other.timeOffset;
+    return srcLayerId == other.srcLayerId && dstLayerId == other.dstLayerId &&
+           timeOffset == other.timeOffset;
   }
 };
 

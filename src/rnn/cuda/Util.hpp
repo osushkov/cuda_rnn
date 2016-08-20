@@ -12,6 +12,8 @@ void FreePinned(void *buf);
 
 CuMatrix AllocMatrix(unsigned rows, unsigned cols);
 void FreeMatrix(CuMatrix &m);
+
+void PrintMatrix(const CuMatrix &matrix);
 }
 }
 }

@@ -7,7 +7,7 @@
 using namespace rnn;
 
 static constexpr unsigned TRAINING_SIZE = 100 * 1000 * 1000;
-static constexpr unsigned BATCH_SIZE = 16;
+static constexpr unsigned BATCH_SIZE = 8;
 
 struct RNNTrainer::RNNTrainerImpl {
   unsigned traceLength;
@@ -40,15 +40,15 @@ struct RNNTrainer::RNNTrainerImpl {
 
     vector<unsigned> indices = createTraceStartIndices(trainingData.size(), batchSize);
     for (unsigned i = 0; i < traceLength; i++) {
-      EMatrix input(dim, batchSize);
-      EMatrix output(dim, batchSize);
+      EMatrix input(batchSize, dim);
+      EMatrix output(batchSize, dim);
 
       for (unsigned j = 0; j < batchSize; j++) {
         assert(trainingData[indices[j]].dim == dim);
         assert(trainingData[indices[j] + 1].dim == dim);
 
-        input.col(j) = trainingData[indices[j]].DenseVector();
-        output.col(j) = trainingData[indices[j] + 1].DenseVector();
+        input.row(j) = trainingData[indices[j]].DenseVector().transpose();
+        output.row(j) = trainingData[indices[j] + 1].DenseVector().transpose();
         indices[j]++;
       }
 
@@ -71,9 +71,12 @@ struct RNNTrainer::RNNTrainerImpl {
 
     spec.numInputs = inputSize;
     spec.numOutputs = outputSize;
-    spec.hiddenActivation = LayerActivation::ELU;
+    spec.hiddenActivation = LayerActivation::TANH;
     spec.outputActivation = LayerActivation::SOFTMAX;
     spec.nodeActivationRate = 1.0f;
+
+    spec.maxBatchSize = BATCH_SIZE;
+    spec.maxTraceLength = traceLength;
 
     // Connect layer 1 to the input.
     spec.connections.emplace_back(0, 1, 0);
@@ -87,8 +90,8 @@ struct RNNTrainer::RNNTrainerImpl {
     spec.connections.emplace_back(2, 2, 1);
 
     // 2 layers, 1 hidden.
-    spec.layers.emplace_back(1, 64, false);
-    spec.layers.emplace_back(2, 128, false);
+    spec.layers.emplace_back(1, 8, false);
+    spec.layers.emplace_back(2, 8, false);
     spec.layers.emplace_back(3, outputSize, true);
 
     return make_unique<RNN>(spec);

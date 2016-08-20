@@ -9,6 +9,7 @@
 #include "kernels/MatrixScaleKernel.cuh"
 #include "kernels/TransposeKernel.cuh"
 #include "kernels/WeightedIncrementKernel.cuh"
+#include "kernels/ErrorMeasureKernel.cuh"
 #include "Util.cuh"
 #include <cuda_runtime.h>
 
@@ -26,6 +27,11 @@ struct TaskExecutor::TaskExecutorImpl {
     cudaStreamDestroy(stream);
   }
 
+  void Synchronize(void) {
+    cudaDeviceSynchronize();
+    cudaStreamSynchronize(stream);
+  }
+
   void Execute(const Task &t) {
     cudaError_t err;
 
@@ -37,6 +43,10 @@ struct TaskExecutor::TaskExecutorImpl {
         ActivationKernel::Apply(
             t.data.layerActivationData.layer, t.data.layerActivationData.activation, stream);
       }
+      return;
+    case TaskType::ERROR_MEASURE:
+      ErrorMeasureKernel::Apply(t.data.errorMeasureData.networkOutput,
+        t.data.errorMeasureData.targetOutput, t.data.errorMeasureData.outputLayer, stream);
       return;
     case TaskType::PROPAGATE_DELTA:
       BackwardDeltaKernel::Apply(t.data.propagateDeltaData.nextDelta,
@@ -104,5 +114,7 @@ struct TaskExecutor::TaskExecutorImpl {
 TaskExecutor::TaskExecutor() : impl(new TaskExecutorImpl()) {}
 
 TaskExecutor::~TaskExecutor() = default;
+
+void TaskExecutor::Synchronize(void) { impl->Synchronize(); }
 
 void TaskExecutor::Execute(const Task &task) { impl->Execute(task); }

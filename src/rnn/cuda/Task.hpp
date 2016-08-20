@@ -9,6 +9,7 @@ namespace cuda {
 
 enum class TaskType {
   LAYER_ACTIVATION,
+  ERROR_MEASURE,
   PROPAGATE_DELTA,
   GRADIENT_INCREMENT,
   FILL_MATRIX,
@@ -29,6 +30,17 @@ struct LayerActivationData {
   LayerActivationData() = default;
   LayerActivationData(ConnectionActivation layer, LayerActivation activation)
       : layer(layer), activation(activation) {}
+};
+
+struct ErrorMeasureData {
+  ConnectionActivation networkOutput;
+  TargetOutput targetOutput;
+  LayerBatchDeltas outputLayer;
+
+  ErrorMeasureData() = default;
+  ErrorMeasureData(ConnectionActivation networkOutput, TargetOutput targetOutput,
+                   LayerBatchDeltas outputLayer)
+      : networkOutput(networkOutput), targetOutput(targetOutput), outputLayer(outputLayer) {}
 };
 
 struct PropagateDeltaData {
@@ -173,6 +185,7 @@ struct CopyMatrixD2DData {
 
 union TaskData {
   LayerActivationData layerActivationData;
+  ErrorMeasureData errorMeasureData;
   PropagateDeltaData propagateDeltaData;
   GradientIncrementData gradientIncrementData;
   FillMatrixData fillMatrixData;
@@ -194,6 +207,14 @@ struct Task {
     Task task;
     task.type = TaskType::LAYER_ACTIVATION;
     task.data.layerActivationData = LayerActivationData(layer, activation);
+    return task;
+  }
+
+  static Task ErrorMeasure(ConnectionActivation networkOutput, TargetOutput targetOutput,
+                           LayerBatchDeltas outputLayer) {
+    Task task;
+    task.type = TaskType::ERROR_MEASURE;
+    task.data.errorMeasureData = ErrorMeasureData(networkOutput, targetOutput, outputLayer);
     return task;
   }
 

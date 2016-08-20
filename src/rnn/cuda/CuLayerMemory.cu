@@ -27,7 +27,6 @@ CuTimeSlice *CuLayerMemory::GetTimeSlice(int timestamp) {
     }
   }
 
-  assert(false);
   return nullptr;
 }
 

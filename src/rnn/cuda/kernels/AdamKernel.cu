@@ -44,8 +44,9 @@ void updateWeightsWithAdam(CuMatrix weights, CuMatrix momentum, CuMatrix rms,
   *Elem(weights, row, col) -= lr * mc / sqrtf(rc + epsilon);
 }
 
-void AdamKernel::UpdateMomentumAndRMS(CuMatrix gradient, CuMatrix momentum, CuMatrix rms,
-                                      float beta1, float beta2, cudaStream_t stream) {
+void AdamKernel::UpdateMomentumAndRMS(const CuMatrix &gradient, const CuMatrix &momentum,
+                                      const CuMatrix &rms, float beta1, float beta2,
+                                      cudaStream_t stream) {
 
   assert(gradient.rows == momentum.rows);
   assert(gradient.cols == momentum.cols);
@@ -59,9 +60,9 @@ void AdamKernel::UpdateMomentumAndRMS(CuMatrix gradient, CuMatrix momentum, CuMa
       gradient, momentum, rms, beta1, beta2);
 }
 
-void AdamKernel::UpdateWeightsWithAdam(CuMatrix weights, CuMatrix momentum, CuMatrix rms,
-                                       float beta1, float beta2, float lr, float epsilon,
-                                       cudaStream_t stream) {
+void AdamKernel::UpdateWeightsWithAdam(const CuMatrix &weights, const CuMatrix &momentum, 
+                                       const CuMatrix &rms, float beta1, float beta2, float lr,
+                                       float epsilon, cudaStream_t stream) {
 
   assert(weights.rows == momentum.rows);
   assert(weights.cols == momentum.cols);

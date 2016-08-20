@@ -64,7 +64,7 @@ void activationKernel(ConnectionActivation layer, LayerActivation activation) {
   }
 }
 
-void ActivationKernel::Apply(ConnectionActivation layer, LayerActivation activation,
+void ActivationKernel::Apply(const ConnectionActivation &layer, const LayerActivation &activation,
                              cudaStream_t stream) {
 
   assert(layer.activation.rows == layer.derivative.rows);

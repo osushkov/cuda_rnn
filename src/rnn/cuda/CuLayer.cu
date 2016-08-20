@@ -2,6 +2,7 @@
 #include "CuLayer.hpp"
 #include "Util.hpp"
 #include <cassert>
+#include <iostream>
 
 using namespace rnn;
 using namespace rnn::cuda;

@@ -49,7 +49,7 @@ void weightedIncrementKernel(CuMatrix lw, ConnectionActivation input, CuMatrix o
     __syncthreads();
   }
 
-  if (row < input.batchSize && col < output.cols) {
+  if (row < input.batchSize && col < output.cols - 1) {
     float *outElem = Elem(output, row, col);
     *outElem += sum;
   }

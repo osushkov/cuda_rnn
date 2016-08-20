@@ -7,7 +7,7 @@ namespace rnn {
 namespace cuda {
 namespace MatrixFillKernel {
 
-void Apply(CuMatrix target, float value, cudaStream_t stream);
+void Apply(const CuMatrix &target, float value, cudaStream_t stream);
 }
 }
 }
