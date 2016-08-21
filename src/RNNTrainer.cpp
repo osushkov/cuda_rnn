@@ -7,7 +7,7 @@
 using namespace rnn;
 
 static constexpr unsigned TRAINING_SIZE = 100 * 1000 * 1000;
-static constexpr unsigned BATCH_SIZE = 8;
+static constexpr unsigned BATCH_SIZE = 32;
 
 struct RNNTrainer::RNNTrainerImpl {
   unsigned traceLength;
@@ -71,7 +71,7 @@ struct RNNTrainer::RNNTrainerImpl {
 
     spec.numInputs = inputSize;
     spec.numOutputs = outputSize;
-    spec.hiddenActivation = LayerActivation::TANH;
+    spec.hiddenActivation = LayerActivation::ELU;
     spec.outputActivation = LayerActivation::SOFTMAX;
     spec.nodeActivationRate = 1.0f;
 
@@ -90,8 +90,8 @@ struct RNNTrainer::RNNTrainerImpl {
     spec.connections.emplace_back(2, 2, 1);
 
     // 2 layers, 1 hidden.
-    spec.layers.emplace_back(1, 8, false);
-    spec.layers.emplace_back(2, 8, false);
+    spec.layers.emplace_back(1, 256, false);
+    spec.layers.emplace_back(2, 256, false);
     spec.layers.emplace_back(3, outputSize, true);
 
     return make_unique<RNN>(spec);

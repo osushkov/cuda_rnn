@@ -24,6 +24,7 @@ void updateMomentumAndRMS(CuMatrix gradient, CuMatrix momentum, CuMatrix rms,
 
   *Elem(momentum, row, col) = m * beta1 + g * (1.0f - beta1);
   *Elem(rms, row, col) = r * beta2 + g * g * (1.0f - beta2);
+  *Elem(gradient, row, col) = 0.0f;
 }
 
 __global__
@@ -60,7 +61,7 @@ void AdamKernel::UpdateMomentumAndRMS(const CuMatrix &gradient, const CuMatrix &
       gradient, momentum, rms, beta1, beta2);
 }
 
-void AdamKernel::UpdateWeightsWithAdam(const CuMatrix &weights, const CuMatrix &momentum, 
+void AdamKernel::UpdateWeightsWithAdam(const CuMatrix &weights, const CuMatrix &momentum,
                                        const CuMatrix &rms, float beta1, float beta2, float lr,
                                        float epsilon, cudaStream_t stream) {
 

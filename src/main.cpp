@@ -8,8 +8,8 @@
 void testRNN(string path) {
   CharacterStream cstream(path);
 
-  RNNTrainer trainer(4);
-  auto network = trainer.TrainLanguageNetwork(cstream, 10000);
+  RNNTrainer trainer(16);
+  auto network = trainer.TrainLanguageNetwork(cstream, 1000);
 
   RNNSampler sampler(cstream.VectorDimension());
   vector<unsigned> sampled = sampler.SampleCharacters(network.get(), 1000);

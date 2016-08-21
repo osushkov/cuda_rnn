@@ -1,6 +1,7 @@
 
 #include "CudaTrainer.hpp"
 #include "../common/Common.hpp"
+#include "../common/Semaphore.hpp"
 #include "../math/MatrixView.hpp"
 #include "cuda/CuAdamState.hpp"
 #include "cuda/CuDeltaAccum.hpp"
@@ -10,7 +11,10 @@
 #include "cuda/TaskExecutor.hpp"
 #include "cuda/Util.hpp"
 #include <cassert>
+#include <condition_variable>
 #include <cstring>
+#include <mutex>
+#include <thread>
 #include <utility>
 
 using namespace rnn;
@@ -20,6 +24,15 @@ constexpr float ADAM_BETA1 = 0.9f;
 constexpr float ADAM_BETA2 = 0.999f;
 constexpr float ADAM_LR = 0.001f;
 constexpr float ADAM_EPSILON = 10e-8;
+
+enum class TrainTask {
+  NONE,
+  EXIT,
+  CLEAR_BUFFERS,
+  FORWARDPROP,
+  BACKPROP_DELTA,
+  COMPUTE_AND_UPDATE_GRADIENTS,
+};
 
 struct CudaTrainer::CudaTrainerImpl {
   RNNSpec spec;
@@ -32,14 +45,32 @@ struct CudaTrainer::CudaTrainerImpl {
   CuLayerMemory layerMemory;
   CuAdamState adamState;
 
-  TaskExecutor executor;
+  TaskExecutor defaultExecutor;
   vector<pair<math::MatrixView, math::MatrixView>> inputOutputStaging;
   vector<TargetOutput> traceTargets;
+
+  mutex m; // controls access to tasks for the workers.
+  condition_variable cv;
+  vector<thread> workers;
+
+  TrainTask currentWorkerTask;
+  unsigned curBatchSize;
+  unsigned curTraceLength;
+  Semaphore taskSem;
+
+  vector<TrainTask> taskList = {
+      TrainTask::CLEAR_BUFFERS, TrainTask::FORWARDPROP, TrainTask::BACKPROP_DELTA,
+      TrainTask::COMPUTE_AND_UPDATE_GRADIENTS,
+  };
 
   CudaTrainerImpl(const RNNSpec &spec)
       : spec(spec), maxTraceLength(spec.maxTraceLength), deltaAccum(spec, maxTraceLength),
         gradientAccum(spec), layerMemory(spec, maxTraceLength), adamState(spec) {
     assert(maxTraceLength > 0);
+
+    deltaAccum.Clear();
+    gradientAccum.Clear();
+    layerMemory.Clear();
     adamState.Clear();
 
     for (const auto &layerSpec : spec.layers) {
@@ -64,9 +95,17 @@ struct CudaTrainer::CudaTrainerImpl {
       traceTargets.emplace_back(spec.maxBatchSize,
                                 util::AllocMatrix(spec.maxBatchSize, spec.numOutputs));
     }
+
+    createWorkers(4);
   }
 
   ~CudaTrainerImpl() {
+    currentWorkerTask = TrainTask::EXIT;
+    cv.notify_all();
+    for (auto &w : workers) {
+      w.join();
+    }
+
     for (auto &layer : layers) {
       layer.Cleanup();
     }
@@ -100,8 +139,8 @@ struct CudaTrainer::CudaTrainerImpl {
           assert(li.second.weights.rows == w.second.rows);
           assert(li.second.weights.cols == w.second.cols);
 
-          executor.Execute(Task::CopyMatrixH2D(w.second, li.second.weights));
-          executor.Execute(Task::TransposeMatrix(li.second.weights, li.second.weightsT));
+          defaultExecutor.Execute(Task::CopyMatrixH2D(w.second, li.second.weights));
+          defaultExecutor.Execute(Task::TransposeMatrix(li.second.weights, li.second.weightsT));
           found = true;
           break;
         }
@@ -122,7 +161,7 @@ struct CudaTrainer::CudaTrainerImpl {
           assert(li.second.weights.rows == w.second.rows);
           assert(li.second.weights.cols == w.second.cols);
 
-          executor.Execute(Task::CopyMatrixD2H(li.second.weights, w.second));
+          defaultExecutor.Execute(Task::CopyMatrixD2H(li.second.weights, w.second));
           found = true;
           break;
         }
@@ -136,49 +175,25 @@ struct CudaTrainer::CudaTrainerImpl {
     assert(!trace.empty());
     assert(trace.front().batchInput.rows() == trace.front().batchOutput.rows());
 
-    deltaAccum.Clear();
-    gradientAccum.Clear();
-    layerMemory.Clear();
-    executor.Synchronize();
+    curBatchSize = trace.front().batchInput.rows();
+    curTraceLength = trace.size();
 
-    unsigned batchSize = trace.front().batchInput.rows();
-    pushTraceToDevice(trace, batchSize);
-    executor.Synchronize();
+    pushTraceToDevice(trace);
 
-    cout << "trace input" << endl;
-    cout << trace[0].batchInput << endl << endl;
-    // for (auto &lc : spec.connections) {
-    //   if (lc.srcLayerId == 0) {
-    //     for (unsigned i = 0; i < trace.size(); i++) {
-    //       CuConnectionMemoryData *inData = getConnectionMemoryData(lc, i);
-    //       assert(inData != nullptr && inData->haveActivation);
-    //
-    //       executor.Synchronize();
-    //       cout << "input " << i << endl;
-    //       util::PrintMatrix(inData->activation);
-    //       cout << "trace: " << endl;
-    //       cout << trace[i].batchInput << endl;
-    //       getchar();
-    //     }
-    //   }
-    // }
+    for (TrainTask task : taskList) {
+      currentWorkerTask = task;
+      cv.notify_all();
 
-    for (int i = 0; i < static_cast<int>(trace.size()); i++) {
-      forwardProp(i, batchSize);
-
-      CuTimeSlice *ts = layerMemory.GetTimeSlice(i);
-      assert(ts != nullptr && ts->networkOutput.haveActivation);
+      for (unsigned i = 0; i < workers.size(); i++) {
+        taskSem.wait();
+      }
+      util::CudaSynchronize();
     }
 
-    for (int i = static_cast<int>(trace.size()) - 1; i >= 0; i--) {
-      backProp(i, batchSize);
-    }
-
-    updateLayers(batchSize);
-    executor.Synchronize();
+    currentWorkerTask = TrainTask::NONE;
   }
 
-  void pushTraceToDevice(const vector<SliceBatch> &trace, unsigned batchSize) {
+  void pushTraceToDevice(const vector<SliceBatch> &trace) {
     for (unsigned i = 0; i < trace.size(); i++) {
       assert(trace[i].batchInput.cols() == inputOutputStaging[i].first.cols);
       assert(trace[i].batchInput.rows() <= inputOutputStaging[i].first.rows);
@@ -190,11 +205,101 @@ struct CudaTrainer::CudaTrainerImpl {
 
       size_t outputSize = trace[i].batchOutput.rows() * trace[i].batchOutput.cols() * sizeof(float);
       memcpy(inputOutputStaging[i].second.data, trace[i].batchOutput.data(), outputSize);
+    }
+  }
 
-      traceTargets[i].batchSize = batchSize;
+  void createWorkers(unsigned numWorkers) {
+    assert(numWorkers > 0);
+    currentWorkerTask = TrainTask::NONE;
+
+    for (unsigned workerIdx = 0; workerIdx < numWorkers; workerIdx++) {
+      workers.emplace_back([this, workerIdx] {
+        TaskExecutor executor;
+        TrainTask prevTask = TrainTask::NONE;
+
+        while (true) {
+          std::unique_lock<std::mutex> lk(m);
+
+          while (currentWorkerTask == TrainTask::NONE || currentWorkerTask == prevTask) {
+            cv.wait(lk, [this, prevTask]() {
+              return currentWorkerTask != TrainTask::NONE && currentWorkerTask != prevTask;
+            });
+          }
+
+          assert(currentWorkerTask != TrainTask::NONE);
+          prevTask = currentWorkerTask;
+          lk.unlock();
+
+          switch (currentWorkerTask) {
+          case TrainTask::EXIT:
+            return;
+          case TrainTask::CLEAR_BUFFERS:
+            workerClearBuffers(executor, workerIdx);
+            break;
+          case TrainTask::FORWARDPROP:
+            workerForwardprop(executor, workerIdx);
+            break;
+          case TrainTask::BACKPROP_DELTA:
+            workerBackpropDelta(executor, workerIdx);
+            break;
+          case TrainTask::COMPUTE_AND_UPDATE_GRADIENTS:
+            workerComputeAndUpdateGradients(executor, workerIdx);
+            break;
+          default:
+            assert(false);
+          }
+
+          taskSem.notify();
+        }
+      });
+    }
+  }
+
+  void workerClearBuffers(TaskExecutor &executor, unsigned workerIdx) {
+    unsigned skip = workers.size();
+
+    for (unsigned i = workerIdx; i < deltaAccum.allDeltaAccum.size(); i += skip) {
+      deltaAccum.allDeltaAccum[i].samples = 0;
+      executor.Execute(Task::FillMatrix(deltaAccum.allDeltaAccum[i].accumDelta, 0.0f));
+    }
+
+    for (unsigned i = workerIdx; i < gradientAccum.allWeightsAccum.size(); i += skip) {
+      gradientAccum.allWeightsAccum[i].samples = 0;
+      // executor.Execute(Task::FillMatrix(gradientAccum.allWeightsAccum[i].accumGradient, 0.0f));
+    }
+
+    for (unsigned i = workerIdx; i < spec.maxTraceLength; i += skip) {
+      CuTimeSlice *ts = layerMemory.GetTimeSlice(i);
+      if (ts != nullptr) {
+        ts->networkOutput.haveActivation = false;
+        executor.Execute(Task::FillMatrix(ts->networkOutput.activation, 0.0f));
+        // executor.Execute(Task::FillMatrix(ts->networkOutput.derivative, 0.0f));
+
+        for (auto &cd : ts->connectionData) {
+          cd.haveActivation = false;
+
+          // This is so we dont zero out the bias column.
+          CuMatrix trimmed = cd.activation;
+          trimmed.cols--;
+          executor.Execute(Task::FillMatrix(trimmed, 0.0f));
+          // executor.Execute(Task::FillMatrix(cd.derivative, 0.0f));
+        }
+      }
+    }
+  }
+
+  void workerForwardprop(TaskExecutor &executor, unsigned workerIdx) {
+    // Forward Prop has no 'trivial' stream level parallelism.
+    if (workerIdx != 0) {
+      return;
+    }
+
+    for (int i = 0; i < static_cast<int>(curTraceLength); i++) {
+      // Copy the input/output from host to device memory.
+      traceTargets[i].batchSize = curBatchSize;
       executor.Execute(Task::CopyMatrixH2D(inputOutputStaging[i].second, traceTargets[i].value));
 
-      CuTimeSlice *ts = layerMemory.GetTimeSlice(static_cast<int>(i));
+      CuTimeSlice *ts = layerMemory.GetTimeSlice(i);
       assert(ts != nullptr);
 
       bool foundInput = false;
@@ -206,10 +311,76 @@ struct CudaTrainer::CudaTrainerImpl {
         }
       }
       assert(foundInput);
+
+      // Do the forward pass through this time slice.
+      forwardProp(executor, i);
+      assert(ts->networkOutput.haveActivation);
     }
   }
 
-  void forwardProp(int timestamp, unsigned batchSize) {
+  void workerBackpropDelta(TaskExecutor &executor, unsigned workerIdx) {
+    // BackProp of deltas has no 'trivial' stream level parallelism.
+    if (workerIdx != 0) {
+      return;
+    }
+
+    for (int i = static_cast<int>(curTraceLength) - 1; i >= 0; i--) {
+      backProp(executor, i);
+    }
+  }
+
+  void workerComputeAndUpdateGradients(TaskExecutor &executor, unsigned workerIdx) {
+    unsigned skip = workers.size();
+
+    for (unsigned i = workerIdx; i < spec.connections.size(); i += skip) {
+      LayerConnection connection = spec.connections[i];
+      CuConnectionAccum *connAccum = gradientAccum.GetConnection(connection);
+      assert(connAccum != nullptr);
+
+      for (int timestamp = 0; timestamp < static_cast<int>(curTraceLength); timestamp++) {
+        if (connection.timeOffset == 1 && timestamp == 0) {
+          continue;
+        }
+
+        CuTimeSlice *ts = layerMemory.GetTimeSlice(timestamp);
+        assert(ts != nullptr);
+
+        CuConnectionMemoryData *connData = ts->GetConnectionData(connection);
+        assert(connData != nullptr && connData->haveActivation);
+
+        CuLayerAccum *layerDelta = deltaAccum.GetDelta(connection.dstLayerId, timestamp);
+        assert(layerDelta != nullptr);
+
+        ConnectionActivation activationIn(curBatchSize, connData->activation, connData->derivative);
+
+        executor.Execute(
+            Task::GradientIncrement(LayerBatchDeltas(curBatchSize, layerDelta->accumDelta),
+                                    activationIn, connAccum->accumGradient));
+        connAccum->samples++;
+      }
+
+      float scaleFactor = 1.0f / static_cast<float>(curBatchSize * connAccum->samples);
+      executor.Execute(Task::ScaleMatrix(connAccum->accumGradient, scaleFactor));
+
+      CuAdamConnection *adamConn = adamState.GetConnection(connection);
+      assert(adamConn != nullptr);
+
+      executor.Execute(Task::AdamUpdate(connAccum->accumGradient, adamConn->momentum, adamConn->rms,
+                                        ADAM_BETA1, ADAM_BETA2));
+
+      CuLayer *dstLayer = findLayer(connection.dstLayerId);
+      assert(dstLayer != nullptr);
+
+      CuWeights *weights = dstLayer->GetWeights(connection);
+      assert(weights != nullptr);
+
+      executor.Execute(Task::AdamIncrement(weights->weights, adamConn->momentum, adamConn->rms,
+                                           ADAM_BETA1, ADAM_BETA2, ADAM_LR, ADAM_EPSILON));
+      executor.Execute(Task::TransposeMatrix(weights->weights, weights->weightsT));
+    }
+  }
+
+  void forwardProp(TaskExecutor &executor, int timestamp) {
     for (auto &layer : layers) {
       assert(!layer.incoming.empty());
 
@@ -230,36 +401,15 @@ struct CudaTrainer::CudaTrainerImpl {
         CuConnectionMemoryData *inData = getConnectionMemoryData(in.first, timestamp);
         assert(inData != nullptr && inData->haveActivation);
 
-        ConnectionActivation activationIn(batchSize, inData->activation, inData->derivative);
-
-        if (timestamp == 0) {
-          executor.Synchronize();
-          cout << "**** network in " << layer.layerId << " " << endl;
-          util::PrintMatrix(inData->activation);
-          getchar();
-        }
-
+        ConnectionActivation activationIn(curBatchSize, inData->activation, inData->derivative);
         executor.Execute(
             Task::ForwardIncrement(in.second.weights, activationIn, targetOut->activation));
-
-        // if (timestamp == 3) {
-        //   executor.Synchronize();
-        //   cout << "in" << endl;
-        //   util::PrintMatrix(inData->activation);
-        //   getchar();
-        // }
       }
 
-      ConnectionActivation outActivation(batchSize, targetOut->activation, targetOut->derivative);
+      ConnectionActivation outActivation(curBatchSize, targetOut->activation,
+                                         targetOut->derivative);
       executor.Execute(Task::LayerActivation(outActivation, layer.activation));
       targetOut->haveActivation = true;
-
-      if (timestamp == 0) {
-        executor.Synchronize();
-        cout << "**** network output " << timestamp << " " << layer.layerId << " " << endl;
-        util::PrintMatrix(targetOut->activation);
-        getchar();
-      }
 
       for (unsigned i = 1; i < outData.size(); i++) {
         assert(!outData[i]->haveActivation);
@@ -290,6 +440,71 @@ struct CudaTrainer::CudaTrainerImpl {
     return result;
   }
 
+  void backProp(TaskExecutor &executor, int timestamp) {
+    CuTimeSlice *ts = layerMemory.GetTimeSlice(timestamp);
+    assert(ts != nullptr);
+
+    ConnectionActivation networkOut(curBatchSize, ts->networkOutput.activation,
+                                    ts->networkOutput.derivative);
+
+    CuLayerAccum *outputDelta = deltaAccum.GetDelta(layers.back().layerId, timestamp);
+    assert(outputDelta != nullptr && outputDelta->samples == 0);
+
+    executor.Execute(Task::ErrorMeasure(networkOut, traceTargets[timestamp],
+                                        LayerBatchDeltas(curBatchSize, outputDelta->accumDelta)));
+    outputDelta->samples = 1;
+
+    assert(layers.back().isOutput);
+    recursiveBackprop(executor, layers.back(), timestamp);
+  }
+
+  void recursiveBackprop(TaskExecutor &executor, const CuLayer &layer, int timestamp) {
+    CuLayerAccum *layerDelta = deltaAccum.GetDelta(layer.layerId, timestamp);
+    assert(layerDelta != nullptr);
+
+    assert(layerDelta->samples > 0);
+    if (layerDelta->samples > 1) {
+      float deltaScale = 1.0f / static_cast<float>(layerDelta->samples);
+      executor.Execute(Task::ScaleMatrix(layerDelta->accumDelta, deltaScale));
+    }
+
+    LayerBatchDeltas batchDelta(curBatchSize, layerDelta->accumDelta);
+
+    CuTimeSlice *slice = layerMemory.GetTimeSlice(timestamp);
+    assert(slice != nullptr);
+
+    for (const auto &connection : layer.incoming) {
+      if (connection.first.timeOffset == 1 && timestamp == 0) {
+        continue;
+      }
+
+      if (connection.first.srcLayerId != 0) { // The source is another layer from the srcSlice.
+        CuConnectionMemoryData *connData = slice->GetConnectionData(connection.first);
+        assert(connData != nullptr && connData->haveActivation);
+
+        ConnectionActivation activationIn(curBatchSize, connData->activation, connData->derivative);
+
+        int srcTimestamp = timestamp - connection.first.timeOffset;
+        assert(srcTimestamp >= 0);
+
+        CuLayer *srcLayer = findLayer(connection.first.srcLayerId);
+        assert(srcLayer != nullptr);
+
+        CuLayerAccum *srcDelta = deltaAccum.GetDelta(connection.first.srcLayerId, srcTimestamp);
+        assert(srcDelta != nullptr);
+
+        LayerBatchDeltas targetDelta(curBatchSize, srcDelta->accumDelta);
+        executor.Execute(Task::PropagateDelta(batchDelta, connection.second.weightsT, activationIn,
+                                              targetDelta));
+        srcDelta->samples++;
+
+        if (connection.first.timeOffset == 0) {
+          recursiveBackprop(executor, *srcLayer, timestamp);
+        }
+      }
+    }
+  }
+
   CuConnectionMemoryData *getConnectionMemoryData(const LayerConnection &conn, int timestamp) {
     CuTimeSlice *ts = layerMemory.GetTimeSlice(timestamp);
     if (ts == nullptr) {
@@ -301,101 +516,6 @@ struct CudaTrainer::CudaTrainerImpl {
     return r;
   }
 
-  void backProp(int timestamp, unsigned batchSize) {
-    CuTimeSlice *ts = layerMemory.GetTimeSlice(timestamp);
-    assert(ts != nullptr);
-
-    ConnectionActivation networkOut(batchSize, ts->networkOutput.activation,
-                                    ts->networkOutput.derivative);
-
-    CuLayerAccum *outputDelta = deltaAccum.GetDelta(layers.back().layerId, timestamp);
-    assert(outputDelta != nullptr && outputDelta->samples == 0);
-
-    // executor.Synchronize();
-    // cout << "**** network output" << endl;
-    // util::PrintMatrix(networkOut.activation);
-    // cout << "target output" << endl;
-    // util::PrintMatrix(traceTargets[timestamp].value);
-    // getchar();
-
-    executor.Execute(Task::ErrorMeasure(networkOut, traceTargets[timestamp],
-                                        LayerBatchDeltas(batchSize, outputDelta->accumDelta)));
-    outputDelta->samples = 1;
-
-    assert(layers.back().isOutput);
-    recursiveBackprop(layers.back(), timestamp, batchSize);
-
-    // CuConnectionAccum *cg = gradientAccum.GetConnection(LayerConnection(1, 2, 0));
-    // assert(cg != nullptr && cg->samples > 0);
-    //
-    // executor.Synchronize();
-    // cout << "!****? " << timestamp << " " << cg->samples << endl;
-    // util::PrintMatrix(cg->accumGradient);
-    // getchar();
-  }
-
-  void recursiveBackprop(const CuLayer &layer, int timestamp, unsigned batchSize) {
-    CuLayerAccum *layerDelta = deltaAccum.GetDelta(layer.layerId, timestamp);
-    assert(layerDelta != nullptr);
-
-    assert(layerDelta->samples > 0);
-    if (layerDelta->samples > 1) {
-      float deltaScale = 1.0f / static_cast<float>(layerDelta->samples);
-      executor.Execute(Task::ScaleMatrix(layerDelta->accumDelta, deltaScale));
-    }
-
-    // executor.Synchronize();
-    // cout << "**** " << timestamp << " " << layer.layerId << endl;
-    // util::PrintMatrix(layerDelta->accumDelta);
-    // getchar();
-
-    LayerBatchDeltas batchDelta(batchSize, layerDelta->accumDelta);
-
-    CuTimeSlice *slice = layerMemory.GetTimeSlice(timestamp);
-    assert(slice != nullptr);
-
-    for (const auto &connection : layer.incoming) {
-      if (connection.first.timeOffset == 1 && timestamp == 0) {
-        continue;
-      }
-
-      CuConnectionMemoryData *connData = slice->GetConnectionData(connection.first);
-      assert(connData != nullptr && connData->haveActivation);
-
-      CuConnectionAccum *connAccum = gradientAccum.GetConnection(connection.first);
-      assert(connAccum != nullptr);
-
-      ConnectionActivation activationIn(batchSize, connData->activation, connData->derivative);
-      executor.Execute(Task::GradientIncrement(batchDelta, activationIn, connAccum->accumGradient));
-      connAccum->samples++;
-
-      // executor.Synchronize();
-      // cout << "accum gradient: " << endl;
-      // util::PrintMatrix(connAccum->accumGradient);
-      // getchar();
-
-      if (connection.first.srcLayerId != 0) { // The source is another layer from the srcSlice.
-        int srcTimestamp = timestamp - connection.first.timeOffset;
-        assert(srcTimestamp >= 0);
-
-        CuLayer *srcLayer = findLayer(connection.first.srcLayerId);
-        assert(srcLayer != nullptr);
-
-        CuLayerAccum *srcDelta = deltaAccum.GetDelta(connection.first.srcLayerId, srcTimestamp);
-        assert(srcDelta != nullptr);
-
-        LayerBatchDeltas targetDelta(batchSize, srcDelta->accumDelta);
-        executor.Execute(Task::PropagateDelta(batchDelta, connection.second.weightsT, activationIn,
-                                              targetDelta));
-        srcDelta->samples++;
-
-        if (connection.first.timeOffset == 0) {
-          recursiveBackprop(*srcLayer, timestamp, batchSize);
-        }
-      }
-    }
-  }
-
   CuLayer *findLayer(unsigned layerId) {
     for (auto &layer : layers) {
       if (layer.layerId == layerId) {
@@ -403,71 +523,6 @@ struct CudaTrainer::CudaTrainerImpl {
       }
     }
     return nullptr;
-  }
-
-  void updateLayers(unsigned batchSize) {
-    // CuConnectionAccum *cg = gradientAccum.GetConnection(LayerConnection(1, 2, 0));
-    // assert(cg != nullptr && cg->samples > 0);
-    //
-    // executor.Synchronize();
-    // cout << "sheeet " << cg->samples << endl;
-    // util::PrintMatrix(cg->accumGradient);
-    // getchar();
-
-    for (const auto &conn : spec.connections) {
-      CuConnectionAccum *cg = gradientAccum.GetConnection(conn);
-      assert(cg != nullptr && cg->samples > 0);
-
-      float scaleFactor = 1.0f / static_cast<float>(batchSize * cg->samples);
-      executor.Execute(Task::ScaleMatrix(cg->accumGradient, scaleFactor));
-
-      // if (conn.srcLayerId == 1 && conn.dstLayerId == 2) {
-      //   executor.Synchronize();
-      //   cout << "!****" << endl;
-      //   util::PrintMatrix(cg->accumGradient);
-      //   executor.Synchronize();
-      //   getchar();
-      // }
-
-      CuAdamConnection *adamConn = adamState.GetConnection(conn);
-      assert(adamConn != nullptr);
-
-      executor.Execute(Task::AdamUpdate(cg->accumGradient, adamConn->momentum, adamConn->rms,
-                                        ADAM_BETA1, ADAM_BETA2));
-
-      CuLayer *dstLayer = findLayer(conn.dstLayerId);
-      assert(dstLayer != nullptr);
-
-      CuWeights *weights = dstLayer->GetWeights(conn);
-      assert(weights != nullptr);
-
-      executor.Execute(Task::AdamIncrement(weights->weights, adamConn->momentum, adamConn->rms,
-                                           ADAM_BETA1, ADAM_BETA2, ADAM_LR, ADAM_EPSILON));
-      executor.Execute(Task::TransposeMatrix(weights->weights, weights->weightsT));
-
-      // executor.Synchronize();
-      // cout << "updating **** " << conn.srcLayerId << " " << conn.dstLayerId << endl;
-      // util::PrintMatrix(adamConn->momentum);
-      // cout << "----" << endl;
-      // util::PrintMatrix(adamConn->rms);
-      // executor.Synchronize();
-      // getchar();
-    }
-
-    // for (const auto &conn : spec.connections) {
-    //   if (conn.srcLayerId == 1 && conn.dstLayerId == 2) {
-    //
-    //     CuLayer *dstLayer = findLayer(conn.dstLayerId);
-    //     assert(dstLayer != nullptr);
-    //
-    //     CuWeights *weights = dstLayer->GetWeights(conn);
-    //     assert(weights != nullptr);
-    //
-    //     getchar();
-    //     cout << "****" << endl;
-    //     util::PrintMatrix(weights->weights);
-    //   }
-    // }
   }
 };
 

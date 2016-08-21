@@ -27,11 +27,6 @@ struct TaskExecutor::TaskExecutorImpl {
     cudaStreamDestroy(stream);
   }
 
-  void Synchronize(void) {
-    cudaDeviceSynchronize();
-    cudaStreamSynchronize(stream);
-  }
-
   void Execute(const Task &t) {
     cudaError_t err;
 
@@ -114,7 +109,5 @@ struct TaskExecutor::TaskExecutorImpl {
 TaskExecutor::TaskExecutor() : impl(new TaskExecutorImpl()) {}
 
 TaskExecutor::~TaskExecutor() = default;
-
-void TaskExecutor::Synchronize(void) { impl->Synchronize(); }
 
 void TaskExecutor::Execute(const Task &task) { impl->Execute(task); }

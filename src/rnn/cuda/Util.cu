@@ -11,6 +11,10 @@ using namespace rnn::cuda;
 
 static unsigned totalBytesAllocated = 0;
 
+void util::CudaSynchronize(void) {
+  cudaDeviceSynchronize();
+}
+
 void *util::AllocPinned(size_t bufSize) {
   void* result = nullptr;
 

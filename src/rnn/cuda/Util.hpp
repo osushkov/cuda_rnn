@@ -7,6 +7,8 @@ namespace rnn {
 namespace cuda {
 namespace util {
 
+void CudaSynchronize(void);
+
 void *AllocPinned(size_t bufSize);
 void FreePinned(void *buf);
 
