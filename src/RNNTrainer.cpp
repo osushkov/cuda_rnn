@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <future>
 
 using namespace rnn;
 
@@ -18,12 +19,21 @@ struct RNNTrainer::RNNTrainerImpl {
     uptr<RNN> network = createNewNetwork(cStream.VectorDimension(), cStream.VectorDimension());
 
     vector<math::OneHotVector> letters = cStream.ReadCharacters(TRAINING_SIZE);
+    std::future<vector<SliceBatch>> batchData = std::async(std::launch::async, [this, &letters]() {
+      return makeBatch(letters, BATCH_SIZE);
+    });
+
     for (unsigned i = 0; i < iters; i++) {
       if (i % 100 == 0) {
         cout << i << "/" << iters << endl;
       }
 
-      network->Update(makeBatch(letters, BATCH_SIZE));
+      vector<SliceBatch> curBatch = batchData.get();
+      batchData = std::async(std::launch::async, [this, &letters]() {
+        return makeBatch(letters, BATCH_SIZE);
+      });
+
+      network->Update(curBatch);
     }
     network->Refresh();
 
@@ -90,8 +100,8 @@ struct RNNTrainer::RNNTrainerImpl {
     spec.connections.emplace_back(2, 2, 1);
 
     // 2 layers, 1 hidden.
-    spec.layers.emplace_back(1, 256, false);
-    spec.layers.emplace_back(2, 256, false);
+    spec.layers.emplace_back(1, 512, false);
+    spec.layers.emplace_back(2, 512, false);
     spec.layers.emplace_back(3, outputSize, true);
 
     return make_unique<RNN>(spec);

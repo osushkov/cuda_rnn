@@ -175,13 +175,20 @@ struct CudaTrainer::CudaTrainerImpl {
     assert(!trace.empty());
     assert(trace.front().batchInput.rows() == trace.front().batchOutput.rows());
 
-    curBatchSize = trace.front().batchInput.rows();
-    curTraceLength = trace.size();
+    {
+      std::lock_guard<std::mutex> lk(m);
+      curBatchSize = trace.front().batchInput.rows();
+      curTraceLength = trace.size();
+    }
 
     pushTraceToDevice(trace);
 
     for (TrainTask task : taskList) {
-      currentWorkerTask = task;
+      {
+        std::lock_guard<std::mutex> lk(m);
+        currentWorkerTask = task;
+      }
+
       cv.notify_all();
 
       for (unsigned i = 0; i < workers.size(); i++) {
@@ -190,7 +197,10 @@ struct CudaTrainer::CudaTrainerImpl {
       util::CudaSynchronize();
     }
 
-    currentWorkerTask = TrainTask::NONE;
+    {
+      std::lock_guard<std::mutex> lk(m);
+      currentWorkerTask = TrainTask::NONE;
+    }
   }
 
   void pushTraceToDevice(const vector<SliceBatch> &trace) {
@@ -230,7 +240,7 @@ struct CudaTrainer::CudaTrainerImpl {
           prevTask = currentWorkerTask;
           lk.unlock();
 
-          switch (currentWorkerTask) {
+          switch (prevTask) {
           case TrainTask::EXIT:
             return;
           case TrainTask::CLEAR_BUFFERS:
